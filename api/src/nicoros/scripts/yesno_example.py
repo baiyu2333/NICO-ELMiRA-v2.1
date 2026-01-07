@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # USAGE: Use script with yes or no as parameter
 # python yesno.py yes

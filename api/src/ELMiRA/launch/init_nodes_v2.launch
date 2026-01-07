@@ -12,29 +12,44 @@
 <launch>
     <!-- Arguments -->
     <arg name="mllm_provider" default="openai" doc="MLLM provider: openai or google"/>
+    <!-- <arg name="mic_device" default="" doc="Microphone device index or name"/> -->
+    
+    <!-- Calibration Offsets -->
+    <arg name="offset_x" default="0.0" doc="Calibration offset for X axis (meters)"/>
+    <arg name="offset_y" default="0.0" doc="Calibration offset for Y axis (meters)"/>
     <arg name="mllm_model" default="" doc="Model name (empty for provider default)"/>
     <arg name="use_owlv2_fallback" default="false" doc="Launch OWLv2 as fallback"/>
     <arg name="use_mllm_grounding" default="true" doc="Use MLLM for object detection"/>
     <arg name="temperature" default="0.7" doc="LLM temperature"/>
     <arg name="image_topic" default="/nico/vision/right" doc="Camera topic"/>
-    <arg name="json_path" default="$(find nicoros)/../../../json/nico_humanoid_upper_fixed.json" doc="Motor config JSON"/>
+    <arg name="json_path" default="$(find elmira)/json/nico_humanoid_upper_fixed_usb0.json" doc="Motor config JSON"/>
+    <arg name="dummy" default="false" doc="Run in dummy/simulation mode"/>
     
     <!-- Speech ASR parameters - adjust based on your microphone/environment -->
-    <arg name="energy_silence" default="2000" doc="Energy level for silence (increase for noisy environments)"/>
-    <arg name="energy_start" default="4000" doc="Energy threshold to start speech detection"/>
-    <arg name="energy_stop" default="3000" doc="Energy threshold to stop speech detection"/>
+    <arg name="energy_silence" default="300" doc="Energy level for silence (increase for noisy environments)"/>
+    <arg name="energy_start" default="500" doc="Energy threshold to start speech detection"/>
+    <arg name="energy_stop" default="400" doc="Energy threshold to stop speech detection"/>
     <arg name="energy_dynamic" default="true" doc="Dynamically adjust energy thresholds"/>
+    <arg name="mic_device" default="" doc="Microphone device index or name"/>
     
     <!-- Camera -->
     <include file="$(find elmira)/launch/camera.launch"/>
     
+    <!-- Derived argument for required nodes (only required if NOT dummy) -->
+    <arg name="required_val" value="false" if="$(arg dummy)"/>
+    <arg name="required_val" value="true" unless="$(arg dummy)"/>
+
     <!-- Joint Controller -->
     <include file="$(find nicoros)/launch/joint_controller.launch">
         <arg name="json_path" value="$(arg json_path)"/>
+        <arg name="dummy" value="$(arg dummy)"/>
     </include>
     
     <!-- Speech ASR with adjusted thresholds -->
-    <node name="speech_asr" pkg="elmira" type="speech_asr.py" required="true" output="screen">
+    <node name="speech_asr" pkg="elmira" type="speech_asr.py" required="false" output="screen">
+        <env name="CUDA_VISIBLE_DEVICES" value=""/>
+        <env name="PYTHONHTTPSVERIFY" value="0"/>
+        <param name="mic_device" value="$(arg mic_device)"/>
         <param name="energy_silence" value="$(arg energy_silence)"/>
         <param name="energy_start" value="$(arg energy_start)"/>
         <param name="energy_stop" value="$(arg energy_stop)"/>
@@ -43,7 +58,9 @@
     </node>
     
     <!-- MLLM Gateway (v2) -->
-    <node name="mllm_gateway" pkg="elmira" type="llm_api_v2.py" required="true" output="screen">
+    <node name="mllm_gateway" pkg="elmira" type="llm_api_v2.py" required="false" output="screen">
+        <env name="CUDA_VISIBLE_DEVICES" value=""/>
+        <env name="PYTHONHTTPSVERIFY" value="0"/>
         <param name="provider" value="$(arg mllm_provider)"/>
         <param name="model" value="$(arg mllm_model)"/>
         <param name="temperature" value="$(arg temperature)"/>
@@ -52,20 +69,34 @@
     
     <!-- OWLv2 Object Localiser (optional fallback) -->
     <node name="object_localiser" pkg="elmira" type="object_localiser.py" 
-          required="true" output="screen" if="$(arg use_owlv2_fallback)"/>
+          required="$(arg required_val)" output="screen" if="$(arg use_owlv2_fallback)">
+          <env name="CUDA_VISIBLE_DEVICES" value=""/>
+    </node>
     
     <!-- Coordinate Transfer -->
     <node name="coordinate_transfer" pkg="elmira" type="coordinate_transfer.py" 
-          required="true" output="screen"/>
+          required="false" output="screen">
+          <env name="CUDA_VISIBLE_DEVICES" value=""/>
+          <param name="offset_x" value="$(arg offset_x)"/>
+          <param name="offset_y" value="$(arg offset_y)"/>
+    </node>
     
     <!-- IK Solver -->
-    <node name="ik_solver" pkg="elmira" type="ik_solver.py" required="true" output="screen"/>
+    <node name="ik_solver" pkg="elmira" type="ik_solver.py" required="false" output="screen">
+        <env name="CUDA_VISIBLE_DEVICES" value=""/>
+    </node>
     
     <!-- Text to Speech -->
     <node name="text_to_speech" pkg="nicoros" type="TextToSpeech.py" 
-          required="true" output="screen"/>
+          required="false" output="screen">
+          <env name="CUDA_VISIBLE_DEVICES" value=""/>
+          <env name="PYTHONHTTPSVERIFY" value="0"/>
+    </node>
     
     <!-- Set global params for state machine -->
+    <arg name="offset_z" default="0.0" doc="Calibration offset for Z axis (meters)"/>
+    <param name="/elmira/offset_z" value="$(arg offset_z)"/>
+    
     <param name="/use_mllm" value="true"/>
     <param name="/use_mllm_grounding" value="$(arg use_mllm_grounding)"/>
     <param name="/mllm_provider" value="$(arg mllm_provider)"/>

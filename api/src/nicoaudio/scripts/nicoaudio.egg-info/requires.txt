@@ -1,7 +1,7 @@
 audiotsm
-numpy==1.21.6
-pydub
-pyaudio
+numpy>=1.21.6
 pyalsaaudio
+pyaudio
+pydub
 requests
 tts

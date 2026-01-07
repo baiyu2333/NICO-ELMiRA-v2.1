@@ -12,6 +12,14 @@ This ROS node provides a unified interface to multiple MLLM providers
 """
 
 import os
+import ssl
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
 import sys
 import json
 import time
@@ -51,6 +59,7 @@ class MLLMGateway:
     - Backward compatible v1 services
     """
     
+    
     def __init__(self):
         rospy.init_node("mllm_gateway")
         
@@ -62,6 +71,9 @@ class MLLMGateway:
         self.timeout = rospy.get_param("~timeout", 30.0)
         self.image_topic = rospy.get_param("~image_topic", "/nico/vision/right")
         self.cache_duration = rospy.get_param("~cache_duration", 0.5)
+        
+        # Context preservation
+        self.last_user_prompt = ""
         
         # Get API key from environment
         self.api_key = self._get_api_key()
@@ -92,22 +104,38 @@ class MLLMGateway:
         rospy.loginfo(f"Model: {self.provider.model if self.provider else 'N/A'}")
     
     def _get_api_key(self) -> str:
-        """Get API key from environment based on provider."""
+        """Get API key from environment or config file."""
+        # Try environment variable first
         if self.provider_name == "openai":
             key = os.environ.get("OPENAI_API_KEY")
-            if not key:
-                rospy.logerr("OPENAI_API_KEY environment variable not set")
-                raise ValueError("OPENAI_API_KEY not set")
-            return key
         elif self.provider_name == "google":
             key = os.environ.get("GOOGLE_API_KEY")
-            if not key:
-                rospy.logerr("GOOGLE_API_KEY environment variable not set")
-                raise ValueError("GOOGLE_API_KEY not set")
-            return key
         else:
             rospy.logerr(f"Unknown provider: {self.provider_name}")
             raise ValueError(f"Unknown provider: {self.provider_name}")
+            
+        if key:
+            return key
+            
+        # Fallback to config file
+        try:
+            config_path = os.path.expanduser("~/.elmira_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    
+                # Check if provider matches (case-insensitive)
+                saved_provider = config.get("provider", "").lower()
+                if saved_provider == self.provider_name:
+                    key = config.get("api_key")
+                    if key:
+                        rospy.loginfo(f"Loaded API key for {self.provider_name} from {config_path}")
+                        return key
+        except Exception as e:
+            rospy.logwarn(f"Failed to load config file: {e}")
+            
+        rospy.logerr(f"{self.provider_name.upper()}_API_KEY not set in environment or config")
+        raise ValueError(f"{self.provider_name.upper()}_API_KEY not set")
     
     def _init_provider(self):
         """Initialize the MLLM provider."""
@@ -133,6 +161,12 @@ class MLLMGateway:
         Service: mllm_chat / llm_chat (v1 compat)
         """
         rospy.loginfo(f"Chat request: {request.prompt[:100]}...")
+        
+        # Update last user prompt context - Only if it's a real user query (starts with USER:)
+        if request.prompt.startswith("USER:"):
+            # Strip "USER:" prefix for cleaner context
+            self.last_user_prompt = request.prompt.replace("USER:", "").strip()
+            rospy.loginfo(f"Context updated: '{self.last_user_prompt}'")
         
         start_time = time.time()
         
@@ -185,8 +219,25 @@ class MLLMGateway:
             # Get current camera frame
             image = self._get_image()
             
+            # Construct prompt using previous context if available
+            if self.last_user_prompt:
+                prompt = (
+                    f"The user previously asked: '{self.last_user_prompt}'. "
+                    f"Now you have the visual information. "
+                    f"If the user asked for a description, use the 'speak' action to tell them what you see. "
+                    f"If they asked to point/act, use the 'act' action. "
+                    f"DO NOT use the 'describe' action again."
+                )
+            else:
+                prompt = (
+                    "Describe what you see on the table using the 'speak' action. "
+                    "DO NOT use the 'describe' action again."
+                )
+            
+            rospy.loginfo(f"Vision Prompt: {prompt}")
+
             response = self.provider.chat(
-                prompt="Describe what you see on the table and respond with appropriate actions.",
+                prompt=prompt,
                 image=image,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,

@@ -1,16 +1,36 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import argparse
 import logging
 import sys
 from os.path import abspath, dirname, join, pardir
 
-import cv_bridge
+# import cv_bridge # Removed
 import nicomsg.srv
 import nicovision.MultiCamRecorder as MultiCamRecorder
 import rospy
 import sensor_msgs.msg
+import numpy as np
 
+def numpy_to_ros_image(cv2_img, encoding="bgr8"):
+    """
+    Manual conversion of Numpy array (OpenCV image) to ROS Image message.
+    Avoids cv_bridge dependency issues.
+    """
+    msg = sensor_msgs.msg.Image()
+    msg.header.stamp = rospy.Time.now()
+    msg.height = cv2_img.shape[0]
+    msg.width = cv2_img.shape[1]
+    
+    if len(cv2_img.shape) == 3:
+        msg.encoding = encoding
+        msg.step = cv2_img.shape[1] * cv2_img.shape[2]
+    else:
+        msg.encoding = "mono8" 
+        msg.step = cv2_img.shape[1]
+        
+    msg.data = cv2_img.tobytes()
+    return msg
 
 class NicoRosVision:
     """
@@ -58,7 +78,7 @@ class NicoRosVision:
         self._config = config
         if config is None:
             self._config = NicoRosVision.getConfig()
-        self._bridge = cv_bridge.CvBridge()
+        # self._bridge = cv_bridge.CvBridge() # Removed
         self._logger.info("-- Init NicoRosVision --")
         rospy.init_node("nicorosvision", anonymous=True)
         self._logger.debug("Init ROS publishers")
@@ -238,8 +258,9 @@ class NicoRosVision:
         :param frame: frame
         """
         if frame is not None:
-            msg = self._bridge.cv2_to_imgmsg(frame, "bgr8")
-            msg.header.stamp = rospy.Time.now()
+            # msg = self._bridge.cv2_to_imgmsg(frame, "bgr8")
+            msg = numpy_to_ros_image(frame, "bgr8")
+            # msg.header.stamp = rospy.Time.now() # Handled in helper
             self._publishers[id].publish(msg)
 
 

@@ -1,13 +1,10 @@
-Metadata-Version: 2.1
+Metadata-Version: 1.0
 Name: nicoaudio
 Version: 1.0
 Summary: NICO api package for audio related modules
+Home-page: UNKNOWN
 Author: Connor Gaede
 Author-email: gaede@informatik.uni-hamburg.de
-Requires-Dist: audiotsm
-Requires-Dist: numpy==1.21.6
-Requires-Dist: pydub
-Requires-Dist: pyaudio
-Requires-Dist: pyalsaaudio
-Requires-Dist: requests
-Requires-Dist: tts
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN

@@ -11,7 +11,7 @@ setup(
     author_email="gaede@informatik.uni-hamburg.de",
     install_requires=[
         "audiotsm",
-        "numpy==1.21.6",
+        "numpy>=1.21.6",
         "pydub",
         "pyaudio",
         "pyalsaaudio",

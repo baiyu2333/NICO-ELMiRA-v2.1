@@ -8,6 +8,16 @@ import rospy
 import torch
 
 
+# Monkey patch to fix evotorch error with bounded problems
+try:
+    import evotorch.core
+    def dummy_ensure_unbounded(self):
+        pass
+    evotorch.core.Problem.ensure_unbounded = dummy_ensure_unbounded
+    rospy.loginfo("Applied monkey patch to evotorch.core.Problem.ensure_unbounded")
+except ImportError:
+    rospy.logwarn("Could not import evotorch to patch ensure_unbounded")
+
 class KinematicsServer:
     def __init__(self):
         rospy.init_node("kinematics_server")

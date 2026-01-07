@@ -1,11 +1,10 @@
-Metadata-Version: 2.1
+Metadata-Version: 1.0
 Name: nicomotion
 Version: 1.0
 Summary: NICO api package for motion related modules
+Home-page: UNKNOWN
 Author: Connor Gaede
 Author-email: 4gaede@informatik.uni-hamburg.de
-Requires-Dist: math3d
-Requires-Dist: transforms3d
-Requires-Dist: numpy
-Requires-Dist: matplotlib
-Requires-Dist: gaikpy
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN

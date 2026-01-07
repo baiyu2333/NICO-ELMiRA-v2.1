@@ -43,7 +43,14 @@ class ImplicitCoordinateTransferServer:
             .squeeze()
             .cpu()
         )
-        rospy.loginfo(f"Real coordinates: x={real_x}, y={real_y}")
+        # Apply manual offsets for calibration
+        offset_x = rospy.get_param("~offset_x", 0.0)
+        offset_y = rospy.get_param("~offset_y", 0.0)
+        
+        real_x += offset_x
+        real_y += offset_y
+        
+        rospy.loginfo(f"Real coordinates: x={real_x}, y={real_y} (includes offsets x={offset_x}, y={offset_y})")
         return real_x, real_y
 
 

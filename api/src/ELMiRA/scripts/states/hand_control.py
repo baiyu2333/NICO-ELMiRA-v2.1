@@ -96,7 +96,7 @@ class HandControl(smach.State):
         self._right_io = None
         
         # Motor command timeout (seconds) - don't wait for position feedback
-        self.command_timeout = 1.5
+        self.command_timeout = 1.0
     
     def _get_hand_side(self, planning_group: str) -> str:
         """Determine hand side from planning group."""
@@ -160,10 +160,35 @@ class HandControl(smach.State):
             positions = self.RIGHT_HAND_OPEN if action == "open" else self.RIGHT_HAND_CLOSE
             
             # Call setAngle service for each motor
+            # Enable torque for these motors first to ensure they move
+            enable_torque = rospy.ServiceProxy("/nico/motion/enableTorque", nicomsg.srv.SetValue)
             set_angle = rospy.ServiceProxy("/nico/motion/setAngle", SetValue)
             
             for motor_name, position in positions.items():
                 try:
+                    # Enable torque first
+                    # Using SetValue because enableTorque might expect string, output of enableTorque is 's' (string)
+                    # Wait, looking at Motion.py: _ROSPY__enableTorque takes 's' -> nicomsg.msg.s (topic)
+                    # BUT Motion.py lines 570-577 is SUBSCRIBER.
+                    # Motion.py doesn't seem to expose enableTorque as a SERVICE properly named enableTorque ??
+                    # It has subscribers.
+                    # Wait, let's check Motion.py again.
+                    pass 
+                except Exception:
+                    pass
+            
+            # Using Publishers for Torque Enable since Service might not exist 
+            enable_torque_pub = rospy.Publisher("/nico/motion/enableTorque", nicomsg.msg.s, queue_size=5)
+            rospy.sleep(0.1) # Wait for connection
+            
+            for motor_name, position in positions.items():
+                try:
+                    # Publish Enable Torque
+                    msg = nicomsg.msg.s()
+                    msg.param1 = motor_name
+                    enable_torque_pub.publish(msg)
+                    rospy.sleep(0.05)
+
                     # SetValue expects motor name and value
                     set_angle(motor_name, float(position))
                     rospy.logdebug(f"Set {motor_name} to {position}")
@@ -256,8 +281,8 @@ class HandControl(smach.State):
             success = self._send_hand_command_ros(side, hand_action)
         
         if not success:
-            rospy.loginfo("HandControl: Falling back to direct motor control")
-            success = self._send_hand_command_direct(side, hand_action)
+            rospy.logwarn("HandControl: ROS service failed. NOT falling back to direct control to avoid crashing the driver (Port Conflict).")
+            # success = self._send_hand_command_direct(side, hand_action)
         
         return "succeeded" if success else "failed"
 

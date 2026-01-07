@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 """
 A simple test of the follow-joint-trajectory action without using MoveIt!.

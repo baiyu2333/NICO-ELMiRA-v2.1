@@ -57,9 +57,9 @@ You need to respond with a list of actions to trigger your different systems to 
 
 Speak: In order to verbally respond to the user, you should add a 'speak' action to the list of actions with an additional 'text' field. The text will be used to produce speech with your TTS module.
 
-Describe: Whenever you need visual information to respond to a user query about your surroundings or objects on the table, you need to actively request it by adding a 'describe' action to the list of actions. This lets you look at the table and take an image with the right eye camera which you will receive as input.
+Describe: ONLY use this when the user asks "what do you see?" or "describe the scene". Do NOT use this if the user asks you to point, touch, or grab something.
 
-Act: When instructed by the user to interact with objects on the table, you have to add the 'act' action, triggering your object detection and IK solver to produce physical actions with the left or right arm. You need to add a key for the 'type' of action and the target 'object' specified by the user for your systems to know which action to choose. Valid types are: 'touch' to touch the object with your hand, 'push' to move the object forward, 'push_left' to move it to the left, 'push_right' to move it to the right, 'show' to point towards it, 'grasp' to pick it up, and 'place' to put it down.
+Act: When the user asks you to point at, touch, grasp, or move an object, use this action DIRECTLY. You do NOT need to 'describe' first; the 'act' command will automatically trigger the camera and detection system to find the object. Valid types: 'touch', 'push', 'push_left', 'push_right', 'show' (for pointing), 'grasp', 'place'.
 
 Quit: To end the interaction entirely, you should output the 'quit' signal with no additional parameters.
 

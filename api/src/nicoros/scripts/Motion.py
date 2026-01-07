@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import argparse
 import logging
@@ -65,6 +65,7 @@ class NicoRosMotion:
         :type config: dict
         """
         self.logger = logging.getLogger(__name__)
+        self._running = False
         self.robot = None
         if config is None:
             config = NicoRosMotion.getConfig()

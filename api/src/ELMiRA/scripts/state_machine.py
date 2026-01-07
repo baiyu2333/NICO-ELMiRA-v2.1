@@ -10,6 +10,10 @@ from elmira.msg import PerformASRAction
 from elmira.srv import PromptTextLLM, PromptVisionLLM
 from nicomsg.srv import SayText
 from nicomsg.msg import empty
+from std_msgs.msg import String
+
+# Global publisher for dashboard conversation
+conversation_pub = None
 
 # v2 MLLM switching - services use same types but different endpoints
 # PromptTextLLM used for both llm_chat (v1) and mllm_chat (v2)
@@ -56,6 +60,11 @@ def main():
     MOTION_SRV_RIGHT = "/right/open_manipulator_p/goal_joint_space_path"
     MOTION_SUB_HEAD = "/NICOL/joint_states"
     MOTION_SRV_HEAD = "/NICOL/head/goal_joint_space_path"
+    
+    # Initialize conversation publisher (Latched so dashboard receives history on connect)
+    global conversation_pub
+    conversation_pub = rospy.Publisher("/elmira/conversation", String, queue_size=10, latch=True)
+
     # set initial userdata
     sm.userdata.system_message = ""
     sm.userdata.llm_input = ""
@@ -120,7 +129,10 @@ def main():
     sm.userdata.motion_look_down_names = ["head_z", "head_y"]
     # Note: Negative head_y looks DOWN, positive looks UP
     sm.userdata.motion_look_down_positions = [0.0, -0.8203]
-    sm.userdata.table_z = 0.68
+    base_table_z = 0.68
+    offset_z = rospy.get_param("/elmira/offset_z", 0.0)
+    sm.userdata.table_z = base_table_z + offset_z
+    rospy.loginfo(f"Table Z set to {sm.userdata.table_z} (Base {base_table_z} + Offset {offset_z})")
     # TTS
     sm.userdata.tts_language = "en"
     sm.userdata.tts_pitch = 0.0
@@ -132,7 +144,13 @@ def main():
         # move to initial state
         @smach.cb_interface(output_keys=["llm_actions"], outcomes=["initial_pose"])
         def initial_pose_callback(userdata):
-            userdata.llm_actions = [{"action": "initial_pose"}]
+            userdata.llm_actions = [
+                {"action": "initial_pose"},
+                {"action": "speak", "text": "System initialized. I am listening."}
+            ]
+            if conversation_pub:
+                conversation_pub.publish("ROBOT: System initialized. I am listening.")
+
             return "initial_pose"
 
         smach.StateMachine.add(
@@ -149,6 +167,8 @@ def main():
                     return "empty"
                 else:
                     rospy.loginfo(f"USER: {result.text}")
+                    if conversation_pub:
+                        conversation_pub.publish(f"USER: {result.text}")
                     userdata.llm_input = f"USER: {result.text}"
                     return "succeeded"
 
@@ -189,13 +209,30 @@ def main():
             parsed = json.loads(response.response)
             # Handle both formats: {"actions": [...]} or {"action": "...", ...}
             if "actions" in parsed:
-                userdata.llm_actions = parsed["actions"]
+                actions_list = parsed["actions"]
             elif "action" in parsed:
                 # Single action format - wrap in list
-                userdata.llm_actions = [parsed]
+                actions_list = [parsed]
             else:
                 # Fallback - treat entire response as a speak action
-                userdata.llm_actions = [{"action": "speak", "text": response.response}]
+                actions_list = [{"action": "speak", "text": response.response}]
+            
+            userdata.llm_actions = actions_list
+
+            # Publish robot response to conversation
+            if conversation_pub and actions_list:
+                for action in actions_list:
+                    act_type = action.get("action")
+                    if act_type == "speak":
+                        text = action.get("text", "")
+                        if text:
+                            conversation_pub.publish(f"ROBOT: {text}")
+                    elif act_type == "act":
+                        obj = action.get("object", "object")
+                        atype = action.get("type", "acting on")
+                        conversation_pub.publish(f"ROBOT: *{atype.capitalize()} {obj}*")
+                    elif act_type == "describe":
+                        conversation_pub.publish("ROBOT: *Analyzing scene...*")
             return "succeeded"
 
         smach.StateMachine.add(
@@ -403,7 +440,44 @@ def main():
                         MOTION_SRV_RIGHT,
                         MOTION_SUB_RIGHT,
                     ),
-                    {"succeeded": "next_action"},
+                    {"succeeded": "CHECK_POST_GRASP"},
+                )
+                
+                # Post-grasp: Close hand if 'grasp', Open hand if 'place'
+                @smach.cb_interface(
+                    input_keys=["action_type"],
+                    outcomes=["needs_grasp", "needs_place", "no_action"],
+                )
+                def check_post_grasp_cb(userdata):
+                    action = str(userdata.action_type).lower()
+                    if action in ["grasp", "grab", "pick", "take"]:
+                        rospy.loginfo(f"Post-action: Closing hand ({action})")
+                        return "needs_grasp"
+                    elif action in ["place", "drop", "release", "open"]:
+                        rospy.loginfo(f"Post-action: Opening hand ({action})")
+                        return "needs_place"
+                    return "no_action"
+
+                smach.StateMachine.add(
+                    "CHECK_POST_GRASP",
+                    smach.CBState(check_post_grasp_cb),
+                    {
+                        "needs_grasp": "GRASP_CLOSE_HAND",
+                        "needs_place": "GRASP_OPEN_HAND",
+                        "no_action": "next_action",
+                    },
+                )
+
+                smach.StateMachine.add(
+                    "GRASP_CLOSE_HAND",
+                    CloseHand(),
+                    {"succeeded": "next_action", "failed": "next_action"},
+                )
+
+                smach.StateMachine.add(
+                    "GRASP_OPEN_HAND",
+                    OpenHand(),
+                    {"succeeded": "next_action", "failed": "next_action"},
                 )
                 
                 # TODO: Re-enable hand control when left hand hardware is connected

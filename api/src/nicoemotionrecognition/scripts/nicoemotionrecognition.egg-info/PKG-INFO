@@ -1,8 +1,10 @@
-Metadata-Version: 2.1
+Metadata-Version: 1.0
 Name: nicoemotionrecognition
 Version: 1.0
 Summary: NICO api package for Pablo Barros' emotion recognition
+Home-page: UNKNOWN
 Author: Connor Gaede
 Author-email: gaede@informatik.uni-hamburg.de
-Requires-Dist: docker
-Requires-Dist: flaskcom@ git+https://github.com/LemonSpeech/flaskcom.git@44660c8#egg=flaskcom
+License: UNKNOWN
+Description: UNKNOWN
+Platform: UNKNOWN

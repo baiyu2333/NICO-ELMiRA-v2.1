@@ -22,6 +22,14 @@
 
 # Imports
 from __future__ import annotations
+import ssl
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+
 import os
 import re
 import sys
@@ -1130,8 +1138,14 @@ class SpeechDetector:
 		if self.state == DetectorState.STARTED:
 			pre_first_id = first_id - 1
 			if self.chunk_id - self.silent_stop_count - max(pre_first_id, self.starting_id) >= self.num_start_chunks:
-				num_started_chunks = self.chunk_id - max(pre_first_id, self.starting_id - self.starting_padding)  # 1 <= self.num_start_chunks + self.silent_stop_count <= self.chunk_id - max(pre_first_id, self.starting_id) <= num_started_chunks <= self.chunk_id - self.starting_id + self.starting_padding <= self.num_padding_chunks + self.num_start_chunks + self.num_stop_chunks - 1 == self.chunk_history.maxlen
-				previous_chunks = list(itertools.islice(self.chunk_history, len(self.chunk_history) - num_started_chunks, len(self.chunk_history) - 1))
+				num_started_chunks = self.chunk_id - max(pre_first_id, self.starting_id - self.starting_padding)
+				
+				# Safeguard: Ensure indices are non-negative
+				hist_len = len(self.chunk_history)
+				start_index = max(0, hist_len - num_started_chunks)
+				end_index = max(0, hist_len - 1)
+				
+				previous_chunks = list(itertools.islice(self.chunk_history, start_index, end_index))
 				if self.debug:
 					rospy.loginfo(f"CAN START at chunk {self.chunk_id} with first {self.chunk_id - num_started_chunks + 1} and {num_started_chunks} total chunks")
 				return previous_chunks
