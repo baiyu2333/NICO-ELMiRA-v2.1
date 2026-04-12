@@ -74,6 +74,7 @@ class MLLMGateway:
         
         # Context preservation
         self.last_user_prompt = ""
+        self.refinement_target_object = ""  # Set by state machine before refinement call
         
         # Get API key from environment
         self.api_key = self._get_api_key()
@@ -88,11 +89,16 @@ class MLLMGateway:
             cache_duration=self.cache_duration,
         )
         
+        # Conversation History
+        self.conversation_history = []
+        self.max_history = 20
+        
         # Register v2 services (new names)
         rospy.Service("mllm_chat", PromptTextLLM, self.handle_chat)
         rospy.Service("mllm_vision", PromptVisionLLM, self.handle_vision)
         rospy.Service("mllm_visibility", CheckLLMObjectVisibility, self.handle_visibility)
         rospy.Service("mllm_detect", DetectWithMLLM, self.handle_detect)
+        rospy.Service("mllm_refine_grasp", PromptVisionLLM, self.handle_refine_grasp)
         
         # Register backward-compatible v1 services
         # These are the same services but with legacy names
@@ -171,11 +177,13 @@ class MLLMGateway:
         start_time = time.time()
         
         try:
+            # Pass history to provider
             response = self.provider.chat(
                 prompt=request.prompt,
                 image=None,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                history=self.conversation_history
             )
             
             latency_ms = (time.time() - start_time) * 1000
@@ -183,6 +191,27 @@ class MLLMGateway:
             
             if response.success:
                 rospy.loginfo(f"LLM output:\n{response.response_json}")
+                
+                # Update history
+                content = request.prompt
+                if content.startswith("USER:"):
+                    content = content.replace("USER:", "").strip()
+                
+                # Add "User" input (could be User or System message)
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": content
+                })
+                # Add Assistant Message
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": response.response_json
+                })
+                
+                # Trim history
+                if len(self.conversation_history) > self.max_history:
+                    self.conversation_history = self.conversation_history[-self.max_history:]
+                        
                 return PromptTextLLMResponse(response=response.response_json)
             else:
                 rospy.logerr(f"Chat failed: {response.error_message}")
@@ -241,6 +270,7 @@ class MLLMGateway:
                 image=image,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                history=self.conversation_history
             )
             
             latency_ms = (time.time() - start_time) * 1000
@@ -248,6 +278,23 @@ class MLLMGateway:
             
             if response.success:
                 rospy.loginfo(f"LLM output:\n{response.response_json}")
+                
+                 # Update history with vision interaction
+                 # We treat the synthesized prompt as the user input here for history consistency
+                 # although slightly redundant, it keeps the narrative linear for the LLM
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": prompt
+                })
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": response.response_json
+                })
+                
+                # Trim history
+                if len(self.conversation_history) > self.max_history:
+                    self.conversation_history = self.conversation_history[-self.max_history:]
+                
                 return PromptVisionLLMResponse(response=response.response_json)
             else:
                 rospy.logerr(f"Vision failed: {response.error_message}")
@@ -362,6 +409,113 @@ class MLLMGateway:
                 error_message=str(e),
                 latency_ms=latency_ms
             )
+    
+    def handle_refine_grasp(self, request) -> PromptVisionLLMResponse:
+        """
+        Handle grasp refinement request.
+        
+        Takes a fresh camera image (with the robot's hand visible near the
+        target object) and asks GPT to estimate the correction offset needed
+        to align the hand with the object.
+        
+        The target object name is read from the ROS param /mllm_refine_target.
+        
+        Service: mllm_refine_grasp
+        Returns JSON: {"x_offset_meters": float, "y_offset_meters": float,
+                       "confidence": float, "description": str}
+        """
+        # Get target object from ROS param (set by grasp_refinement state)
+        target_object = rospy.get_param("/mllm_refine_target", "the object")
+        rospy.loginfo(f"Grasp refinement request for: {target_object}")
+        
+        start_time = time.time()
+        
+        try:
+            # Get fresh camera frame (hand should be visible near the object)
+            image = self._get_image()
+            
+            prompt = (
+                f"You are controlling a robot arm. The robot's hand is currently "
+                f"hovering above the table, trying to reach the '{target_object}'. "
+                f"Look at the image and estimate how far the robot's hand (the "
+                f"mechanical gripper/fingers visible in the image) needs to move "
+                f"to be directly above the '{target_object}'.\n\n"
+                f"Coordinate system:\n"
+                f"- x_offset_meters: positive = move hand FORWARD (away from robot), "
+                f"negative = move hand BACKWARD (toward robot)\n"
+                f"- y_offset_meters: positive = move hand LEFT (from robot's perspective), "
+                f"negative = move hand RIGHT\n\n"
+                f"The table is about 50cm wide and 40cm deep from the robot's perspective. "
+                f"Objects are typically within 5-15cm of the hand after the initial approach.\n\n"
+                f"If the hand is already very close to the object (within 1-2cm), "
+                f"set both offsets to 0.\n\n"
+                f"Respond with ONLY this JSON format:\n"
+                f'{{"x_offset_meters": 0.0, "y_offset_meters": 0.0, '
+                f'"confidence": 0.8, "description": "brief explanation"}}'
+            )
+            
+            response = self.provider.chat(
+                prompt=prompt,
+                image=image,
+                temperature=0.2,  # Low temperature for precision
+                max_tokens=256,
+            )
+            
+            latency_ms = (time.time() - start_time) * 1000
+            rospy.loginfo(f"Grasp refinement response in {latency_ms:.0f}ms")
+            
+            if response.success:
+                rospy.loginfo(f"Refinement output: {response.response_json}")
+                
+                # Validate and clamp the offsets
+                try:
+                    data = json.loads(response.response_json)
+                    x_off = float(data.get("x_offset_meters", 0.0))
+                    y_off = float(data.get("y_offset_meters", 0.0))
+                    
+                    # Clamp to ±5cm to prevent wild corrections
+                    MAX_CORRECTION = 0.05
+                    x_off = max(-MAX_CORRECTION, min(MAX_CORRECTION, x_off))
+                    y_off = max(-MAX_CORRECTION, min(MAX_CORRECTION, y_off))
+                    
+                    clamped_response = json.dumps({
+                        "x_offset_meters": round(x_off, 4),
+                        "y_offset_meters": round(y_off, 4),
+                        "confidence": data.get("confidence", 0.5),
+                        "description": data.get("description", ""),
+                    })
+                    rospy.loginfo(f"Clamped refinement: {clamped_response}")
+                    return PromptVisionLLMResponse(response=clamped_response)
+                    
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    rospy.logwarn(f"Failed to parse refinement response: {e}")
+                    # Return zero correction on parse failure
+                    fallback = json.dumps({
+                        "x_offset_meters": 0.0,
+                        "y_offset_meters": 0.0,
+                        "confidence": 0.0,
+                        "description": f"Parse error: {e}",
+                    })
+                    return PromptVisionLLMResponse(response=fallback)
+            else:
+                rospy.logerr(f"Refinement failed: {response.error_message}")
+                fallback = json.dumps({
+                    "x_offset_meters": 0.0,
+                    "y_offset_meters": 0.0,
+                    "confidence": 0.0,
+                    "description": f"API error: {response.error_message}",
+                })
+                return PromptVisionLLMResponse(response=fallback)
+                
+        except Exception as e:
+            rospy.logerr(f"Grasp refinement exception: {e}")
+            fallback = json.dumps({
+                "x_offset_meters": 0.0,
+                "y_offset_meters": 0.0,
+                "confidence": 0.0,
+                "description": f"Exception: {e}",
+            })
+            return PromptVisionLLMResponse(response=fallback)
     
     def run(self):
         """Run the gateway node."""

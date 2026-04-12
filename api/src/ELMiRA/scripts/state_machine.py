@@ -23,6 +23,7 @@ from states.move_robot import JointTrajectoryIterator, MoveRobotPart, MoveRobot
 from states.action_planner import ConcurrentPlanAndVerify
 from states.action_parser import ActionParser
 from states.hand_control import HandControl, OpenHand, CloseHand, PreGraspHand
+from states.grasp_refinement import GraspRefinement
 
 
 def main():
@@ -274,7 +275,7 @@ def main():
                 "system_message",
             ],
             it=lambda: range(0, len(sm.userdata.llm_actions)),
-            output_keys=["llm_actions", "system_message", "hand_action", "planning_group", "action_type"],
+            output_keys=["llm_actions", "system_message", "hand_action", "planning_group", "action_type", "real_x", "real_y", "target_object"],
             it_label="action_index",
             exhausted_outcome="succeeded",
         )
@@ -303,7 +304,7 @@ def main():
                     "tts_blocking",
                     "system_message",
                 ],
-                output_keys=["llm_actions", "system_message", "hand_action", "planning_group", "action_type"],
+                output_keys=["llm_actions", "system_message", "hand_action", "planning_group", "action_type", "real_x", "real_y", "target_object"],
             )
             with execute_actions_sm:
 
@@ -360,14 +361,29 @@ def main():
                     rospy.loginfo(f"LLM output:\n{response.response}")
                     parsed = json.loads(response.response)
                     # Handle both formats: {"actions": [...]} or {"action": "...", ...}
+                    actions_list = []
                     if "actions" in parsed:
-                        userdata.llm_actions = parsed["actions"]
+                        actions_list = parsed["actions"]
                     elif "action" in parsed:
                         # Single action format - wrap in list
-                        userdata.llm_actions = [parsed]
+                        actions_list = [parsed]
                     else:
                         # Fallback - treat entire response as a speak action
-                        userdata.llm_actions = [{"action": "speak", "text": response.response}]
+                        actions_list = [{"action": "speak", "text": response.response}]
+                    
+                    userdata.llm_actions = actions_list
+                    
+                    # --- Publish to Dashboard Chat ---
+                    for act in actions_list:
+                        if act["action"] == "speak":
+                            conversation_pub.publish(f"ROBOT: {act['text']}")
+                        elif act["action"] == "describe":
+                             conversation_pub.publish("ROBOT: *Describing scene...*")
+                        elif act["action"] == "act":
+                             obj = act.get("object", "object")
+                             conversation_pub.publish(f"ROBOT: *Acting on {obj}*")
+                    # ---------------------------------
+
                     return "succeeded"
 
                 smach.StateMachine.add(
@@ -429,7 +445,7 @@ def main():
                     {"succeeded": "JOINT_TRAJECTORY_ITERATOR", "failed": "JOINT_TRAJECTORY_ITERATOR"},
                 )
                 
-                # execute movement
+                # execute movement (for grasp: only the approach pose)
                 smach.StateMachine.add(
                     "JOINT_TRAJECTORY_ITERATOR",
                     JointTrajectoryIterator(
@@ -440,49 +456,54 @@ def main():
                         MOTION_SRV_RIGHT,
                         MOTION_SUB_RIGHT,
                     ),
-                    {"succeeded": "CHECK_POST_GRASP"},
+                    {"succeeded": "CHECK_GRASP_REFINE"},
                 )
                 
-                # Post-grasp: Close hand if 'grasp', Open hand if 'place'
+                # Check if this was a grasp action that needs visual servoing refinement
                 @smach.cb_interface(
                     input_keys=["action_type"],
-                    outcomes=["needs_grasp", "needs_place", "no_action"],
+                    outcomes=["needs_refinement", "done"],
                 )
-                def check_post_grasp_cb(userdata):
+                def check_grasp_refine_cb(userdata):
                     action = str(userdata.action_type).lower()
                     if action in ["grasp", "grab", "pick", "take"]:
-                        rospy.loginfo(f"Post-action: Closing hand ({action})")
-                        return "needs_grasp"
-                    elif action in ["place", "drop", "release", "open"]:
-                        rospy.loginfo(f"Post-action: Opening hand ({action})")
-                        return "needs_place"
-                    return "no_action"
-
+                        rospy.loginfo("Grasp detected: Starting visual servoing refinement")
+                        return "needs_refinement"
+                    return "done"
+                
                 smach.StateMachine.add(
-                    "CHECK_POST_GRASP",
-                    smach.CBState(check_post_grasp_cb),
+                    "CHECK_GRASP_REFINE",
+                    smach.CBState(check_grasp_refine_cb),
                     {
-                        "needs_grasp": "GRASP_CLOSE_HAND",
-                        "needs_place": "GRASP_OPEN_HAND",
-                        "no_action": "next_action",
+                        "needs_refinement": "GRASP_REFINEMENT",
+                        "done": "next_action",
                     },
                 )
-
+                
+                # Visual servoing: take a second picture, get correction from GPT,
+                # plan the final descent + grasp + lift with corrected coordinates
                 smach.StateMachine.add(
-                    "GRASP_CLOSE_HAND",
-                    CloseHand(),
-                    {"succeeded": "next_action", "failed": "next_action"},
-                )
-
-                smach.StateMachine.add(
-                    "GRASP_OPEN_HAND",
-                    OpenHand(),
-                    {"succeeded": "next_action", "failed": "next_action"},
+                    "GRASP_REFINEMENT",
+                    GraspRefinement(),
+                    transitions={
+                        "succeeded": "GRASP_FINAL_EXECUTE",
+                        "aborted": "next_action",  # Fall back on failure
+                    },
                 )
                 
-                # TODO: Re-enable hand control when left hand hardware is connected
-                # and a dedicated left hand controller node is implemented.
-                # See hand_control.py for details on the protocol mismatch issue.
+                # Execute the refined grasp trajectory (descent + close + lift + return)
+                smach.StateMachine.add(
+                    "GRASP_FINAL_EXECUTE",
+                    JointTrajectoryIterator(
+                        MOTION_SRV_HEAD,
+                        MOTION_SUB_HEAD,
+                        MOTION_SRV_LEFT,
+                        MOTION_SUB_LEFT,
+                        MOTION_SRV_RIGHT,
+                        MOTION_SUB_RIGHT,
+                    ),
+                    {"succeeded": "next_action"},
+                )
 
             # close execute_actions_sm
             smach.Iterator.set_contained_state(

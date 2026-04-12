@@ -175,6 +175,7 @@ Please always output your response as a valid JSON object containing the list of
         temperature: float = 0.7,
         max_tokens: int = 4096,
         json_mode: bool = True,
+        history: Optional[List[Dict]] = None,
     ) -> Dict[str, Any]:
         """
         Build the full request body for generateContent API.
@@ -185,17 +186,37 @@ Please always output your response as a valid JSON object containing the list of
             temperature: Sampling temperature (0.0-2.0)
             max_tokens: Maximum output tokens
             json_mode: Whether to request JSON output
+            history: Optional conversation history
             
         Returns:
             Request body dictionary
         """
+        contents = []
+        
+        # Add history if provided
+        if history:
+            for msg in history:
+                role = "user" if msg.get("role") == "user" else "model"
+                content = msg.get("content", "")
+                # Ensure content is string
+                if isinstance(content, list):
+                    # Attempt to extract text from list content (ignoring images in history for now)
+                    text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
+                    content = " ".join(text_parts)
+                
+                contents.append({
+                    "role": role, 
+                    "parts": [{"text": str(content)}]
+                })
+        
+        # Add current turn
+        contents.append({
+            "role": "user",
+            "parts": self._build_content_parts(prompt, image)
+        })
+        
         body = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": self._build_content_parts(prompt, image)
-                }
-            ],
+            "contents": contents,
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens,
@@ -292,6 +313,7 @@ Please always output your response as a valid JSON object containing the list of
         temperature: float = 0.7,
         max_tokens: int = 4096,
         tools: Optional[List[Dict]] = None,
+        history: Optional[List[Dict]] = None,
     ) -> MLLMResponse:
         """
         Send chat request to Gemini with optional image.
@@ -316,6 +338,7 @@ Please always output your response as a valid JSON object containing the list of
                 temperature=temperature,
                 max_tokens=max_tokens,
                 json_mode=True,
+                history=history,
             )
             
             # Make API call

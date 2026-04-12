@@ -2,67 +2,125 @@
 """
 Hand Control State for ELMiRA v2
 
-Provides SMACH states for controlling NICO's left and right hands.
+Provides SMACH states for controlling NICO's left and right hands
+via the Motion node's built-in openHand/closeHand ROS topics,
+with palm sensor feedback to confirm grasps.
 
-IMPORTANT ARCHITECTURE NOTE:
-- Right hand: Controlled via ROS services through the main Motion node.
-  Motors are in the main config and use Protocol 1.0.
-  
-- Left hand: Uses SEED Robotics XL-320 protocol which is incompatible with
-  Protocol 1.0 used by the main Motion controller. The left hand motors are
-  NOT in the main config to avoid protocol conflicts during initialization.
-  
-  Left hand control options:
-  1. Direct control via Dxl320IO (only works when Motion node is NOT running)
-  2. Future: Separate left_hand_controller node with its own connection
+Architecture:
+- Right hand: Controlled via /nico/motion/openHand and /nico/motion/closeHand
+  topics (nicomsg.msg.s) through the main Motion node.
+- Left hand: Same topics, but left hand hardware may be non-functional
+  depending on the NICO variant.
 
-Right Hand Motor IDs (Protocol 1.0 - in Motion config):
-- 23: r_wrist_z
-- 25: r_wrist_x
-- 29: r_indexfingers_x
-- 32: r_virtualhand_x (coupled fingers)
-
-Left Hand Motor IDs (XL-320 protocol - NOT in Motion config):
-- 31: l_wrist_z (Wrist Roll)
-- 33: l_wrist_x (Wrist Pitch)
-- 34: l_thumb_z (Thumb Roll) - 2-DOF thumb
-- 35: l_thumb_x (Thumb Pitch)
-- 36: l_indexfingers_x (Index Finger)
-- 37: l_middlefingers_x (Middle Finger)
-
-Note: SEED servo position feedback is unreliable - use timeout-based completion.
+Palm Sensor Feedback:
+- /nico/motion/palm_sensor/right (nicomsg.msg.i) — higher value = more pressure
+- /nico/motion/palm_sensor/left (nicomsg.msg.i)
+- Used to confirm when an object is grasped (reading above threshold).
 """
 
 import time
+import threading
 import rospy
 import smach
+import nicomsg.msg
+
+
+# Palm sensor threshold to consider an object "grasped"
+# Typical reading: ~0 when empty, ~200-1000+ when grasping an object
+PALM_SENSOR_GRASP_THRESHOLD = 100
+
+# Timeout for waiting for grasp confirmation (seconds)
+GRASP_CONFIRM_TIMEOUT = 3.0
+
+# Time to wait for hand movement to complete (seconds)
+HAND_MOVE_DURATION = 1.5
+
+
+class PalmSensorMonitor:
+    """Monitors palm sensor readings from the Motion node."""
+    
+    def __init__(self):
+        self._left_reading = 0
+        self._right_reading = 0
+        self._lock = threading.Lock()
+        
+        # Subscribe to palm sensor topics
+        self._sub_left = rospy.Subscriber(
+            "/nico/motion/palm_sensor/left",
+            nicomsg.msg.i,
+            self._left_cb,
+        )
+        self._sub_right = rospy.Subscriber(
+            "/nico/motion/palm_sensor/right",
+            nicomsg.msg.i,
+            self._right_cb,
+        )
+        rospy.loginfo("PalmSensorMonitor: Subscribed to palm sensor topics")
+    
+    def _left_cb(self, msg):
+        with self._lock:
+            self._left_reading = msg.param1
+    
+    def _right_cb(self, msg):
+        with self._lock:
+            self._right_reading = msg.param1
+    
+    def get_reading(self, side: str) -> int:
+        """Get current palm sensor reading for the given side."""
+        with self._lock:
+            return self._left_reading if side == "left" else self._right_reading
+    
+    def is_grasping(self, side: str, threshold: int = PALM_SENSOR_GRASP_THRESHOLD) -> bool:
+        """Check if the palm sensor indicates an object is grasped."""
+        return self.get_reading(side) > threshold
+    
+    def wait_for_grasp(self, side: str, timeout: float = GRASP_CONFIRM_TIMEOUT,
+                       threshold: int = PALM_SENSOR_GRASP_THRESHOLD) -> bool:
+        """
+        Wait until palm sensor detects a grasp or timeout.
+        
+        Returns True if grasp was detected, False if timed out.
+        """
+        start = time.time()
+        rate = rospy.Rate(20)  # Check at 20Hz
+        while (time.time() - start) < timeout and not rospy.is_shutdown():
+            if self.is_grasping(side, threshold):
+                reading = self.get_reading(side)
+                rospy.loginfo(
+                    f"PalmSensor: Grasp confirmed on {side} hand "
+                    f"(reading={reading}, threshold={threshold})"
+                )
+                return True
+            rate.sleep()
+        
+        reading = self.get_reading(side)
+        rospy.logwarn(
+            f"PalmSensor: Grasp NOT confirmed on {side} hand after {timeout}s "
+            f"(reading={reading}, threshold={threshold})"
+        )
+        return False
+
+
+# Singleton palm sensor monitor (shared across all hand control states)
+_palm_monitor = None
+
+def get_palm_monitor() -> PalmSensorMonitor:
+    """Get or create the singleton PalmSensorMonitor."""
+    global _palm_monitor
+    if _palm_monitor is None:
+        _palm_monitor = PalmSensorMonitor()
+    return _palm_monitor
 
 
 class HandControl(smach.State):
     """
     SMACH state for opening or closing robot hands.
     
-    Uses ROS service or direct motor control to actuate finger motors.
-    Determines which hand to use from planning_group.
+    Uses the Motion node's built-in openHand/closeHand ROS topics.
+    Integrates palm sensor feedback for grasp verification.
     """
     
-    # Motor positions for hand poses (in degrees)
-    # Left hand (new SEED Robotics with 2-DOF thumb)
-    LEFT_HAND_OPEN = {
-        "l_thumb_z": 0,      # Thumb roll centered
-        "l_thumb_x": -100,   # Thumb open
-        "l_indexfingers_x": -100,  # Index open
-        "l_middlefingers_x": -100, # Middle open
-    }
-    
-    LEFT_HAND_CLOSE = {
-        "l_thumb_z": 50,     # Thumb roll inward for grasp
-        "l_thumb_x": 100,    # Thumb closed
-        "l_indexfingers_x": 100,   # Index closed
-        "l_middlefingers_x": 100,  # Middle closed
-    }
-    
-    # Right hand (existing Protocol 1.0)
+    # Right hand positions (in degrees)
     RIGHT_HAND_OPEN = {
         "r_indexfingers_x": -150,  # Index open
         "r_virtualhand_x": -150,   # Virtual hand (thumb+middle) open
@@ -73,30 +131,21 @@ class HandControl(smach.State):
         "r_virtualhand_x": 120,    # Virtual hand closed
     }
     
-    def __init__(self, robot=None, use_ros_service=True):
-        """
-        Initialize hand control state.
-        
-        Args:
-            robot: Optional pypot robot instance for direct motor control.
-                   If None and use_ros_service=False, will attempt to connect.
-            use_ros_service: If True, use ROS service for motor control (preferred).
-                            If False, use direct pypot motor control.
-        """
+    def __init__(self):
         smach.State.__init__(
             self,
             outcomes=["succeeded", "failed", "no_action"],
-            input_keys=[],  # No required keys - we check for them manually
+            input_keys=["hand_action", "planning_group"],  
             output_keys=[],
         )
         
-        self.robot = robot
-        self.use_ros_service = use_ros_service
-        self._left_io = None
-        self._right_io = None
+        # Publishers for direct motor control
+        self._pub_set_angle = rospy.Publisher(
+            "/nico/motion/setAngle", nicomsg.msg.sff, queue_size=10
+        )
         
-        # Motor command timeout (seconds) - don't wait for position feedback
-        self.command_timeout = 1.0
+        # Palm sensor monitor
+        self._palm = get_palm_monitor()
     
     def _get_hand_side(self, planning_group: str) -> str:
         """Determine hand side from planning group."""
@@ -105,154 +154,66 @@ class HandControl(smach.State):
         elif planning_group in ("r_arm", "r_hand"):
             return "right"
         else:
-            rospy.logwarn(f"Unknown planning group: {planning_group}")
+            rospy.logwarn(f"HandControl: Unknown planning group: {planning_group}")
             return "right"  # Default to right
     
-    def _init_direct_io(self, side: str):
-        """Initialize direct motor IO if needed."""
-        if side == "left" and self._left_io is None:
-            try:
-                from pypot.dynamixel.io.io_320 import Dxl320IO
-                # Left hand uses XL-320 protocol
-                port = rospy.get_param("/nico/motor_port", "/dev/ttyUSB0")
-                self._left_io = Dxl320IO(port, baudrate=1_000_000, timeout=0.5)
-                rospy.loginfo("HandControl: Initialized XL-320 IO for left hand")
-            except Exception as e:
-                rospy.logerr(f"Failed to initialize left hand IO: {e}")
-                return None
-            return self._left_io
-        elif side == "right" and self._right_io is None:
-            try:
-                from pypot.dynamixel.io import DxlIO
-                # Right hand uses Protocol 1.0
-                port = rospy.get_param("/nico/motor_port", "/dev/ttyUSB0")
-                self._right_io = DxlIO(port, baudrate=1_000_000, timeout=0.5)
-                rospy.loginfo("HandControl: Initialized DxlIO for right hand")
-            except Exception as e:
-                rospy.logerr(f"Failed to initialize right hand IO: {e}")
-                return None
-            return self._right_io
-        
-        return self._left_io if side == "left" else self._right_io
-    
-    def _send_hand_command_ros(self, side: str, action: str) -> bool:
-        """
-        Send hand command via ROS service.
-        
-        Uses /nico/motion/setAngle service.
-        
-        NOTE: Only works for RIGHT hand since left hand motors are not in
-        the Motion config (due to XL-320 protocol incompatibility).
-        """
-        # Left hand cannot use ROS services - motors not in Motion config
+    def _move_hand_motors(self, side: str, action: str):
+        """Send direct motor commands for the hand."""
         if side == "left":
-            rospy.logwarn(
-                "HandControl: Left hand motors are not in Motion config. "
-                "Cannot use ROS service. Left hand control not yet implemented."
-            )
-            # TODO: Implement dedicated left hand controller node
-            return False
+            rospy.logwarn("HandControl: Left hand direct motor control not implemented (XL-320 conflict)")
+            return
+            
+        positions = self.RIGHT_HAND_OPEN if action == "open" else self.RIGHT_HAND_CLOSE
         
-        try:
-            from nicomsg.srv import SetValue
-            
-            # Right hand only
-            positions = self.RIGHT_HAND_OPEN if action == "open" else self.RIGHT_HAND_CLOSE
-            
-            # Call setAngle service for each motor
-            # Enable torque for these motors first to ensure they move
-            enable_torque = rospy.ServiceProxy("/nico/motion/enableTorque", nicomsg.srv.SetValue)
-            set_angle = rospy.ServiceProxy("/nico/motion/setAngle", SetValue)
-            
-            for motor_name, position in positions.items():
-                try:
-                    # Enable torque first
-                    # Using SetValue because enableTorque might expect string, output of enableTorque is 's' (string)
-                    # Wait, looking at Motion.py: _ROSPY__enableTorque takes 's' -> nicomsg.msg.s (topic)
-                    # BUT Motion.py lines 570-577 is SUBSCRIBER.
-                    # Motion.py doesn't seem to expose enableTorque as a SERVICE properly named enableTorque ??
-                    # It has subscribers.
-                    # Wait, let's check Motion.py again.
-                    pass 
-                except Exception:
-                    pass
-            
-            # Using Publishers for Torque Enable since Service might not exist 
-            enable_torque_pub = rospy.Publisher("/nico/motion/enableTorque", nicomsg.msg.s, queue_size=5)
-            rospy.sleep(0.1) # Wait for connection
-            
-            for motor_name, position in positions.items():
-                try:
-                    # Publish Enable Torque
-                    msg = nicomsg.msg.s()
-                    msg.param1 = motor_name
-                    enable_torque_pub.publish(msg)
-                    rospy.sleep(0.05)
+        for motor_name, position in positions.items():
+            msg = nicomsg.msg.sff()
+            msg.param1 = motor_name
+            msg.param2 = float(position)
+            msg.param3 = 1.0  # max speed fraction
+            self._pub_set_angle.publish(msg)
+            rospy.logdebug(f"HandControl: Published {motor_name} = {position}")
 
-                    # SetValue expects motor name and value
-                    set_angle(motor_name, float(position))
-                    rospy.logdebug(f"Set {motor_name} to {position}")
-                except rospy.ServiceException as e:
-                    rospy.logwarn(f"Failed to set {motor_name}: {e}")
-            
-            # Wait for movement to complete (timeout-based, no position feedback)
-            rospy.sleep(self.command_timeout)
-            return True
-            
-        except Exception as e:
-            rospy.logerr(f"ROS hand control failed: {e}")
-            return False
+    def _open_hand(self, side: str) -> bool:
+        """Open the specified hand."""
+        rospy.loginfo(f"HandControl: Opening {side} hand")
+        
+        self._move_hand_motors(side, "open")
+        
+        # Wait for movement
+        rospy.sleep(HAND_MOVE_DURATION)
+        
+        # Log palm sensor reading after opening
+        reading = self._palm.get_reading(side)
+        rospy.loginfo(f"HandControl: {side} hand opened (palm sensor: {reading})")
+        return True
     
-    def _send_hand_command_direct(self, side: str, action: str) -> bool:
+    def _close_hand(self, side: str, verify_grasp: bool = True) -> bool:
         """
-        Send hand command via direct motor control (pypot).
+        Close the specified hand.
         
-        WARNING: This method opens its own serial connection, which will FAIL
-        if the Motion node is already running (port conflict).
-        
-        For left hand: Cannot work while Motion node is running.
-        For right hand: Use ROS services instead (preferred).
+        If verify_grasp is True, waits for palm sensor to confirm grasp.
         """
-        # Left hand cannot use direct IO while Motion node is running
-        if side == "left":
-            rospy.logerr(
-                "HandControl: Left hand direct control cannot work while Motion node "
-                "is running (serial port conflict). Left hand actions are not "
-                "currently supported. A dedicated left hand controller node is needed."
-            )
-            return False
+        rospy.loginfo(f"HandControl: Closing {side} hand")
         
-        try:
-            io = self._init_direct_io(side)
-            if io is None:
-                return False
-            
-            # Right hand only
-            positions = self.RIGHT_HAND_OPEN if action == "open" else self.RIGHT_HAND_CLOSE
-            motor_ids = {
-                "r_indexfingers_x": 29,
-                "r_virtualhand_x": 32,
-            }
-            
-            # Send position commands
-            for motor_name, position in positions.items():
-                motor_id = motor_ids.get(motor_name)
-                if motor_id:
-                    io.set_goal_position({motor_id: position})
-                    rospy.logdebug(f"Direct set motor {motor_id} ({motor_name}) to {position}")
-                    time.sleep(0.05)  # Small delay between commands
-            
-            # Wait for movement (no position feedback for SEED servos)
-            rospy.sleep(self.command_timeout)
-            return True
-            
-        except Exception as e:
-            rospy.logerr(f"Direct hand control failed: {e}")
-            return False
+        self._move_hand_motors(side, "close")
+        
+        # Wait for movement to complete
+        rospy.sleep(HAND_MOVE_DURATION)
+        
+        if verify_grasp:
+            # Check palm sensor for grasp confirmation
+            grasped = self._palm.wait_for_grasp(side)
+            if grasped:
+                rospy.loginfo(f"HandControl: Object grasped by {side} hand!")
+            else:
+                rospy.logwarn(f"HandControl: {side} hand closed but no object detected by palm sensor")
+            return True  # Still return True - the hand moved even if no object
+        
+        return True
     
     def execute(self, userdata):
         """Execute hand control action."""
-        # Check if hand action is needed - use try/except for SMACH userdata
+        # Check if hand action is needed
         try:
             hand_action = userdata.hand_action
         except (KeyError, AttributeError):
@@ -270,21 +231,21 @@ class HandControl(smach.State):
         try:
             planning_group = userdata.planning_group
         except (KeyError, AttributeError):
-            planning_group = 'r_arm'
+            planning_group = "r_arm"
         side = self._get_hand_side(planning_group)
         
         rospy.loginfo(f"HandControl: {hand_action} {side} hand")
         
-        # Try ROS service first, fall back to direct control
-        success = False
-        if self.use_ros_service:
-            success = self._send_hand_command_ros(side, hand_action)
-        
-        if not success:
-            rospy.logwarn("HandControl: ROS service failed. NOT falling back to direct control to avoid crashing the driver (Port Conflict).")
-            # success = self._send_hand_command_direct(side, hand_action)
-        
-        return "succeeded" if success else "failed"
+        try:
+            if hand_action == "open":
+                success = self._open_hand(side)
+            else:
+                success = self._close_hand(side, verify_grasp=True)
+            
+            return "succeeded" if success else "failed"
+        except Exception as e:
+            rospy.logerr(f"HandControl: Error during {hand_action}: {e}")
+            return "failed"
 
 
 class OpenHand(smach.State):
@@ -300,7 +261,6 @@ class OpenHand(smach.State):
         self._hand_control = HandControl()
     
     def execute(self, userdata):
-        # Create temporary userdata with hand_action set
         class TempUserdata:
             pass
         temp = TempUserdata()
@@ -324,7 +284,6 @@ class CloseHand(smach.State):
         self._hand_control = HandControl()
     
     def execute(self, userdata):
-        # Create temporary userdata with hand_action set
         class TempUserdata:
             pass
         temp = TempUserdata()

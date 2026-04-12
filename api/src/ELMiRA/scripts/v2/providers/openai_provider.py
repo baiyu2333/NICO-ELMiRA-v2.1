@@ -30,7 +30,7 @@ from base import (
 class OpenAIProvider(BaseMLLMProvider):
     """OpenAI GPT-5.2 provider implementation."""
     
-    DEFAULT_MODEL = "gpt-4o"
+    DEFAULT_MODEL = "gpt-5.2"
     
     def __init__(
         self,
@@ -75,12 +75,16 @@ Please always output your response as a valid JSON object containing the list of
         self,
         prompt: str,
         image: Optional[np.ndarray] = None,
+        history: Optional[List[Dict]] = None,
     ) -> List[Dict]:
         """Build message array for API call."""
         messages = [
             {"role": "system", "content": self.system_prompt}
         ]
         
+        if history:
+            messages.extend(history)
+            
         if image is not None:
             base64_image = self.encode_image(image)
             messages.append({
@@ -109,12 +113,13 @@ Please always output your response as a valid JSON object containing the list of
         temperature: float = 0.7,
         max_tokens: int = 1024,
         tools: Optional[List[Dict]] = None,
+        history: Optional[List[Dict]] = None,
     ) -> MLLMResponse:
         """Send chat request to GPT-4o."""
         start_time = time.time()
         
         try:
-            messages = self._build_messages(prompt, image)
+            messages = self._build_messages(prompt, image, history)
             
             kwargs = {
                 "model": self.model,
@@ -236,62 +241,276 @@ Coordinates should be normalized (0-1) relative to image dimensions."""
                 latency_ms=latency_ms
             )
     
+    @staticmethod
+    def _draw_grid(image: np.ndarray, cols: int, rows: int,
+                   labels: List[List[str]]) -> np.ndarray:
+        """
+        Draw a labeled grid overlay on the image.
+        
+        Args:
+            image: BGR image array
+            cols: number of columns
+            rows: number of rows
+            labels: 2D list of cell labels [row][col]
+            
+        Returns:
+            Copy of image with grid drawn on it
+        """
+        import cv2
+        
+        img = image.copy()
+        h, w = img.shape[:2]
+        cell_w = w / cols
+        cell_h = h / rows
+        
+        # Draw grid lines
+        for c in range(1, cols):
+            x = int(c * cell_w)
+            cv2.line(img, (x, 0), (x, h), (0, 255, 0), 2)
+        for r in range(1, rows):
+            y = int(r * cell_h)
+            cv2.line(img, (0, y), (w, y), (0, 255, 0), 2)
+        
+        # Draw cell labels
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = max(0.6, min(h, w) / 600)
+        thickness = max(1, int(font_scale * 2))
+        
+        for r in range(rows):
+            for c in range(cols):
+                label = labels[r][c]
+                cx = int((c + 0.5) * cell_w)
+                cy = int((r + 0.5) * cell_h)
+                
+                text_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
+                tx = cx - text_size[0] // 2
+                ty = cy + text_size[1] // 2
+                
+                # Background rectangle for readability
+                pad = 4
+                cv2.rectangle(
+                    img,
+                    (tx - pad, ty - text_size[1] - pad),
+                    (tx + text_size[0] + pad, ty + pad),
+                    (0, 0, 0), -1,
+                )
+                cv2.putText(img, label, (tx, ty), font, font_scale,
+                            (0, 255, 0), thickness)
+        
+        return img
+
+    def _grid_pass(
+        self,
+        image: np.ndarray,
+        object_name: str,
+        cols: int,
+        rows: int,
+        labels: List[List[str]],
+    ) -> Optional[str]:
+        """
+        Ask GPT which grid cell contains the object.
+        
+        Returns the cell label (e.g., "B2") or None if not found.
+        """
+        grid_image = self._draw_grid(image, cols, rows, labels)
+        
+        # Flatten labels for the prompt
+        all_labels = [lbl for row in labels for lbl in row]
+        
+        prompt = f"""This image has a grid overlay with labeled cells: {', '.join(all_labels)}.
+
+Which cell contains the "{object_name}"? 
+
+Rules:
+- Pick the single cell whose label is closest to the CENTER of the object.
+- If the object is not visible, respond with "none".
+- Respond with ONLY this JSON format:
+{{"cell": "LABEL", "confidence": 0.95}}
+
+Example: {{"cell": "B2", "confidence": 0.9}}"""
+
+        response = self.chat(prompt=prompt, image=grid_image, temperature=0.1)
+        
+        if not response.success:
+            return None
+        
+        try:
+            data = json.loads(response.response_json)
+            cell = data.get("cell", "none")
+            if cell.lower() == "none":
+                return None
+            # Validate that the cell is in our label set
+            if cell in all_labels:
+                return cell
+            # Try case-insensitive match
+            for lbl in all_labels:
+                if lbl.lower() == cell.lower():
+                    return lbl
+            return None
+        except (json.JSONDecodeError, KeyError):
+            return None
+
+    def _cell_to_coords(
+        self, cell: str, cols: int, rows: int, labels: List[List[str]]
+    ) -> Optional[tuple]:
+        """
+        Convert a cell label to normalized (center_x, center_y) coordinates.
+        
+        Returns (center_x, center_y) in [0, 1] range, or None if label not found.
+        """
+        for r in range(rows):
+            for c in range(cols):
+                if labels[r][c] == cell:
+                    cx = (c + 0.5) / cols
+                    cy = (r + 0.5) / rows
+                    return (cx, cy)
+        return None
+
     def detect_objects(
         self,
         texts: List[str],
         image: np.ndarray,
         confidence_threshold: float = 0.5,
     ) -> List[DetectionResult]:
-        """Detect objects using GPT-4o vision."""
-        prompt = f"""You are an object detection system. Detect these objects in the image: {', '.join(texts)}
-
-CRITICAL: Return PRECISE bounding box coordinates. The image uses normalized coordinates where:
-- (0, 0) is the TOP-LEFT corner
-- (1, 1) is the BOTTOM-RIGHT corner
-- x increases from LEFT to RIGHT
-- y increases from TOP to BOTTOM
-
-For each detected object, provide:
-- label: exact object name from the list
-- bbox: [x_min, y_min, x_max, y_max] as normalized coordinates (0.0 to 1.0)
-- confidence: detection confidence (0.0 to 1.0)
-
-Be VERY precise with bounding box coordinates - they will be used for robotic manipulation.
-The bbox should tightly enclose just the object, not the surrounding area.
-
-Respond with ONLY this JSON format:
-{{"detections": [{{"label": "object_name", "bbox": [x_min, y_min, x_max, y_max], "confidence": 0.95}}]}}
-
-Only include objects you can clearly see with confidence >= {confidence_threshold}."""
-
-        response = self.chat(prompt=prompt, image=image, temperature=0.3)
+        """
+        Detect objects using 2-pass grid-based visual grounding.
         
-        if not response.success:
-            return []
+        Pass 1 (Coarse): Overlay a 4x3 grid (columns A-D, rows 1-3) on the
+        full image, ask GPT which cell contains the object.
         
-        try:
-            data = json.loads(response.response_json)
-            results = []
+        Pass 2 (Fine): Crop the identified cell with padding, overlay a 3x3
+        sub-grid, ask for the sub-cell to refine the position.
+        
+        This converts coordinate estimation from free-form number guessing
+        (which GPT is bad at) into visual question answering (which GPT
+        excels at), dramatically improving accuracy.
+        """
+        import cv2
+        
+        # --- Pass 1: Coarse grid (4 cols x 3 rows) ---
+        coarse_cols, coarse_rows = 4, 3
+        col_letters = ["A", "B", "C", "D"]
+        coarse_labels = [
+            [f"{col_letters[c]}{r+1}" for c in range(coarse_cols)]
+            for r in range(coarse_rows)
+        ]
+        
+        results = []
+        
+        for object_name in texts:
+            # Pass 1: Which coarse cell?
+            coarse_cell = self._grid_pass(
+                image, object_name, coarse_cols, coarse_rows, coarse_labels
+            )
             
-            for det in data.get("detections", []):
-                if det.get("confidence", 0) >= confidence_threshold:
-                    bbox = det.get("bbox", [0, 0, 1, 1])
-                    x_min, y_min, x_max, y_max = bbox
+            if coarse_cell is None:
+                continue
+            
+            coarse_coords = self._cell_to_coords(
+                coarse_cell, coarse_cols, coarse_rows, coarse_labels
+            )
+            if coarse_coords is None:
+                continue
+            
+            coarse_cx, coarse_cy = coarse_coords
+            
+            # --- Pass 2: Fine grid on cropped cell ---
+            h, w = image.shape[:2]
+            cell_w = w / coarse_cols
+            cell_h = h / coarse_rows
+            
+            # Find which column/row the coarse cell maps to
+            coarse_col_idx = None
+            coarse_row_idx = None
+            for r in range(coarse_rows):
+                for c in range(coarse_cols):
+                    if coarse_labels[r][c] == coarse_cell:
+                        coarse_col_idx = c
+                        coarse_row_idx = r
+                        break
+            
+            if coarse_col_idx is None:
+                # Fallback: use coarse coordinates directly
+                results.append(DetectionResult(
+                    label=object_name,
+                    score=0.7,
+                    center_x=coarse_cx,
+                    center_y=coarse_cy,
+                    width=1.0 / coarse_cols,
+                    height=1.0 / coarse_rows,
+                ))
+                continue
+            
+            # Crop with 50% padding on each side for context
+            pad_x = cell_w * 0.5
+            pad_y = cell_h * 0.5
+            crop_x1 = max(0, int(coarse_col_idx * cell_w - pad_x))
+            crop_y1 = max(0, int(coarse_row_idx * cell_h - pad_y))
+            crop_x2 = min(w, int((coarse_col_idx + 1) * cell_w + pad_x))
+            crop_y2 = min(h, int((coarse_row_idx + 1) * cell_h + pad_y))
+            
+            cropped = image[crop_y1:crop_y2, crop_x1:crop_x2]
+            
+            if cropped.size == 0:
+                results.append(DetectionResult(
+                    label=object_name,
+                    score=0.7,
+                    center_x=coarse_cx,
+                    center_y=coarse_cy,
+                    width=1.0 / coarse_cols,
+                    height=1.0 / coarse_rows,
+                ))
+                continue
+            
+            # Fine grid: 3x3 on the cropped region
+            fine_cols, fine_rows = 3, 3
+            fine_labels = [
+                [f"{r+1}{c+1}" for c in range(fine_cols)]
+                for r in range(fine_rows)
+            ]
+            
+            fine_cell = self._grid_pass(
+                cropped, object_name, fine_cols, fine_rows, fine_labels
+            )
+            
+            if fine_cell is not None:
+                fine_coords = self._cell_to_coords(
+                    fine_cell, fine_cols, fine_rows, fine_labels
+                )
+                if fine_coords is not None:
+                    fine_cx_local, fine_cy_local = fine_coords
+                    
+                    # Convert from crop-local coordinates to full-image coordinates
+                    crop_w = crop_x2 - crop_x1
+                    crop_h = crop_y2 - crop_y1
+                    
+                    abs_x = crop_x1 + fine_cx_local * crop_w
+                    abs_y = crop_y1 + fine_cy_local * crop_h
+                    
+                    final_cx = abs_x / w
+                    final_cy = abs_y / h
                     
                     results.append(DetectionResult(
-                        label=det["label"],
-                        score=det["confidence"],
-                        center_x=(x_min + x_max) / 2,
-                        center_y=(y_min + y_max) / 2,
-                        width=x_max - x_min,
-                        height=y_max - y_min,
-                        bbox_raw=bbox
+                        label=object_name,
+                        score=0.85,
+                        center_x=final_cx,
+                        center_y=final_cy,
+                        width=crop_w / (w * fine_cols),
+                        height=crop_h / (h * fine_rows),
                     ))
+                    continue
             
-            return results
-            
-        except (json.JSONDecodeError, KeyError):
-            return []
+            # Fallback to coarse if fine pass fails
+            results.append(DetectionResult(
+                label=object_name,
+                score=0.7,
+                center_x=coarse_cx,
+                center_y=coarse_cy,
+                width=1.0 / coarse_cols,
+                height=1.0 / coarse_rows,
+            ))
+        
+        return results
     
     def check_object_visibility(
         self,

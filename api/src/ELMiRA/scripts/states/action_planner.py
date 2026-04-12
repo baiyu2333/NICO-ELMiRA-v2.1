@@ -109,6 +109,13 @@ class ActionTrajectory(smach.State):
     - close_hand: Signal to close gripper
     """
     
+    # Real-world workspace limits (meters) based on NICO arm URDF
+    # The arm has ~35cm reach from shoulder. Shoulder is ~3cm forward from torso center.
+    # Practical reachable range (avoiding full extension):
+    MAX_REACH_X = 0.32   # Max forward reach (meters)
+    MIN_REACH_X = 0.10   # Min forward reach
+    MAX_REACH_Y = 0.25   # Max left/right reach from center
+    
     def __init__(self):
         # Your state initialization goes here
         smach.State.__init__(
@@ -121,6 +128,20 @@ class ActionTrajectory(smach.State):
                 "hand_action",  # "open", "close", or None
             ],
         )
+    
+    def _clamp_coordinates(self, x, y):
+        """Clamp target coordinates to the robot's reachable workspace."""
+        orig_x, orig_y = x, y
+        x = max(self.MIN_REACH_X, min(self.MAX_REACH_X, x))
+        y = max(-self.MAX_REACH_Y, min(self.MAX_REACH_Y, y))
+        if orig_x != x or orig_y != y:
+            rospy.logwarn(
+                f"ActionTrajectory: Clamped coordinates from "
+                f"({orig_x:.3f}, {orig_y:.3f}) to ({x:.3f}, {y:.3f}) "
+                f"[workspace limits: x=[{self.MIN_REACH_X}, {self.MAX_REACH_X}], "
+                f"y=[{-self.MAX_REACH_Y}, {self.MAX_REACH_Y}]]"
+            )
+        return x, y
 
     def execute(self, userdata):
         # Select arm based on target Y coordinate:
@@ -134,12 +155,21 @@ class ActionTrajectory(smach.State):
         userdata.planning_group = "r_arm" if is_right else "l_arm"
         userdata.hand_action = None  # No hand action by default
         
+        # Log and clamp coordinates to reachable workspace
+        rospy.loginfo(
+            f"ActionTrajectory: action={userdata.action_type}, "
+            f"raw target=({userdata.target_x:.3f}, {userdata.target_y:.3f}, {userdata.target_z:.3f}), "
+            f"arm={'right' if is_right else 'left'}"
+        )
+        target_x, target_y = self._clamp_coordinates(userdata.target_x, userdata.target_y)
+        target_z = userdata.target_z
+        
         # calculate target for action
         target_poses = []
         if userdata.action_type == "touch":
             target_pose = Pose()
             target_pose.position = Point(
-                userdata.target_x - 0.0, userdata.target_y, userdata.target_z
+                target_x - 0.0, target_y, target_z
             )
             if is_right:  # x, y, z, w
                 target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -150,7 +180,7 @@ class ActionTrajectory(smach.State):
             target_pose = Pose()
             # NOTE: Reduced X offset from -0.08 to -0.04 for better reachability
             target_pose.position = Point(
-                userdata.target_x - 0.04, userdata.target_y, userdata.target_z + 0.03
+                target_x - 0.04, target_y, target_z + 0.03
             )
             if is_right:  # x, y, z, w
                 target_pose.orientation = Quaternion(-1.0, 0, 0, 0.0)
@@ -166,9 +196,9 @@ class ActionTrajectory(smach.State):
             ]:
                 target_pose = Pose()
                 target_pose.position = Point(
-                    userdata.target_x + offset[0],
-                    userdata.target_y + offset[1],
-                    userdata.target_z + offset[2],
+                    target_x + offset[0],
+                    target_y + offset[1],
+                    target_z + offset[2],
                 )
                 if is_right:  # x, y, z, w
                     target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -185,9 +215,9 @@ class ActionTrajectory(smach.State):
             ]:
                 target_pose = Pose()
                 target_pose.position = Point(
-                    userdata.target_x + offset[0],
-                    userdata.target_y + offset[1],
-                    userdata.target_z + offset[2],
+                    target_x + offset[0],
+                    target_y + offset[1],
+                    target_z + offset[2],
                 )
                 if is_right:  # x, y, z, w
                     target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -203,9 +233,9 @@ class ActionTrajectory(smach.State):
             ]:
                 target_pose = Pose()
                 target_pose.position = Point(
-                    userdata.target_x + offset[0],
-                    userdata.target_y + offset[1],
-                    userdata.target_z + offset[2],
+                    target_x + offset[0],
+                    target_y + offset[1],
+                    target_z + offset[2],
                 )
                 if is_right:  # x, y, z, w
                     target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -213,13 +243,15 @@ class ActionTrajectory(smach.State):
                     target_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
                 target_poses.append(target_pose)
         elif userdata.action_type == "grasp":
-            # Grasp sequence: approach from above, lower to object, then hand closes
-            # 1. Approach pose (above object)
+            # Grasp Phase 1: ONLY the approach pose (hover above object).
+            # The descent, hand-close, and lift are deferred to the visual
+            # servoing refinement loop (GraspRefinement state) which will
+            # re-plan them with corrected coordinates after a second look.
             approach_pose = Pose()
             approach_pose.position = Point(
-                userdata.target_x - 0.02,  # Slightly behind
-                userdata.target_y,
-                userdata.target_z + 0.08,  # Above object
+                target_x - 0.02,  # Slightly behind
+                target_y,
+                target_z + 0.08,  # Above object
             )
             if is_right:
                 approach_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -227,43 +259,17 @@ class ActionTrajectory(smach.State):
                 approach_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
             target_poses.append(approach_pose)
             
-            # 2. Grasp pose (at object level)
-            grasp_pose = Pose()
-            grasp_pose.position = Point(
-                userdata.target_x,
-                userdata.target_y,
-                userdata.target_z + 0.02,  # Just above table
-            )
-            if is_right:
-                grasp_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-            else:
-                grasp_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
-            target_poses.append(grasp_pose)
-            
-            # Signal hand to close after reaching grasp pose
-            userdata.hand_action = "close"
-            
-            # 3. Lift pose (raise object after grasp)
-            lift_pose = Pose()
-            lift_pose.position = Point(
-                userdata.target_x,
-                userdata.target_y,
-                userdata.target_z + 0.12,  # Lift up
-            )
-            if is_right:
-                lift_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-            else:
-                lift_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
-            target_poses.append(lift_pose)
+            # No hand_action here - it will be set by the refinement state
+            userdata.hand_action = None
             
         elif userdata.action_type == "place":
             # Place sequence: lower to table, open hand, retreat
             # 1. Pre-place pose (above target)
             preplace_pose = Pose()
             preplace_pose.position = Point(
-                userdata.target_x,
-                userdata.target_y,
-                userdata.target_z + 0.10,  # Above placement
+                target_x,
+                target_y,
+                target_z + 0.10,  # Above placement
             )
             if is_right:
                 preplace_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -274,9 +280,9 @@ class ActionTrajectory(smach.State):
             # 2. Place pose (at table level)
             place_pose = Pose()
             place_pose.position = Point(
-                userdata.target_x,
-                userdata.target_y,
-                userdata.target_z + 0.02,  # Just above table
+                target_x,
+                target_y,
+                target_z + 0.02,  # Just above table
             )
             if is_right:
                 place_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -290,9 +296,9 @@ class ActionTrajectory(smach.State):
             # 3. Retreat pose (move back and up)
             retreat_pose = Pose()
             retreat_pose.position = Point(
-                userdata.target_x - 0.05,  # Move back
-                userdata.target_y,
-                userdata.target_z + 0.12,  # Lift up
+                target_x - 0.05,  # Move back
+                target_y,
+                target_z + 0.12,  # Lift up
             )
             if is_right:
                 retreat_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
@@ -424,15 +430,34 @@ class ActionPlanner(smach.StateMachine):
 
             # callback to post-process detected objects
             def ik_response_callback(userdata, response):
-                userdata.joint_trajectory = [
-                    {
+                trajectory = []
+                for i, position in enumerate(response.positions):
+                    step = {
                         userdata.planning_group: {
                             "names": position.joint_name,
                             "positions": position.position,
                         }
                     }
-                    for position in response.positions
-                ] + [userdata.motion_init_pose]
+                    
+                    # Target poses logic from ActionTrajectory:
+                    # grasp: [0] approach only (refinement handles the rest)
+                    # place: [0] preplace, [1] place, [2] retreat
+                    
+                    action = str(userdata.action_type).lower()
+                    # Grasp no longer embeds hand_action here - handled by GraspRefinement
+                        
+                    if action in ["place", "drop", "release", "open"] and i == 1:
+                        step["hand_action"] = "open"
+                        step["planning_group"] = userdata.planning_group
+                        
+                    trajectory.append(step)
+                
+                action = str(userdata.action_type).lower()
+                if action in ["grasp", "grab", "pick", "take"]:
+                    # For grasp: don't append init pose - refinement state handles conclusion
+                    userdata.joint_trajectory = trajectory
+                else:
+                    userdata.joint_trajectory = trajectory + [userdata.motion_init_pose]
                 return "succeeded"
 
             # IK Solver
@@ -441,7 +466,7 @@ class ActionPlanner(smach.StateMachine):
                 smach_ros.ServiceState(
                     "inverse_kinematics",
                     InverseKinematics,
-                    input_keys=["planning_group", "motion_init_pose"],
+                    input_keys=["planning_group", "motion_init_pose", "action_type"],
                     request_slots=["planning_group", "poses"],
                     output_keys=["joint_trajectory"],
                     request_cb=ik_request_callback,

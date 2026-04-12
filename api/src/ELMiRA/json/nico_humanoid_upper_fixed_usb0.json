@@ -1,6 +1,6 @@
 {
   "controllers": {
-    "all_controller": {
+    "my_dxl_controller": {
       "sync_read": false,
       "attached_motors": [
         "head",

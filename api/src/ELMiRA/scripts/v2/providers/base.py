@@ -64,6 +64,7 @@ class BaseMLLMProvider(ABC):
         temperature: float = 0.7,
         max_tokens: int = 1024,
         tools: Optional[List[Dict]] = None,
+        history: Optional[List[Dict]] = None,
     ) -> MLLMResponse:
         """
         Send a chat request to the MLLM.

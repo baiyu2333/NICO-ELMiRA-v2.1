@@ -1,13 +1,13 @@
 <launch>
   <arg name="mode" default="right"/>
-  <arg name="width" default="1920"/>
-  <arg name="height" default="1440"/>
+  <arg name="width" default="640"/>
+  <arg name="height" default="480"/>
   <arg name="framerate" default="30"/>
   <arg name="zoom" default="150"/>
   <arg name="tilt" default="-482400"/>
-  <!-- Explicitly set camera devices - autodetection sometimes picks wrong indices -->
-  <arg name="device_left" default="/dev/video2"/>
-  <arg name="device_right" default="/dev/video0"/>
+  <!-- Let autodetection find cameras by serial ID (more reliable than hardcoded /dev/videoX) -->
+  <arg name="device_left" default=""/>
+  <arg name="device_right" default=""/>
 
   <node name="nicovision" pkg="nicoros" type="Vision.py"
     args="--mode=$(arg mode) --width=$(arg width) --height=$(arg height) --framerate=$(arg framerate) --zoom=$(arg zoom) --tilt=$(arg tilt) --device-left=$(arg device_left) --device-right=$(arg device_right)"/>

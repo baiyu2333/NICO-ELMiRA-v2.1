@@ -12,6 +12,34 @@ import pypot.vrep
 from pypot.dynamixel.io.abstract_io import DxlCommunicationError, DxlError
 from pypot.vrep.remoteApiBindings import vrep as remote_api
 
+# --- MONKEY PATCH START ---
+# Fix for sporadic DxlCommunicationError crashing the thread
+from pypot.dynamixel.io.abstract_io import AbstractDxlIO
+import logging
+import time as _time
+
+_original_send_packet = AbstractDxlIO._send_packet
+_last_dxl_warn_time = 0
+_dxl_warn_count = 0
+
+def _patched_send_packet(self, instruction_packet, wait_for_status_packet=True, _force_lock=False, **kwargs):
+    global _last_dxl_warn_time, _dxl_warn_count
+    try:
+        return _original_send_packet(self, instruction_packet, wait_for_status_packet, _force_lock=_force_lock, **kwargs)
+    except DxlCommunicationError as e:
+        _dxl_warn_count += 1
+        now = _time.time()
+        if now - _last_dxl_warn_time > 30:
+            logging.getLogger(__name__).warning(
+                f"DxlCommunicationError suppressed ({_dxl_warn_count} total): {e}"
+            )
+            _last_dxl_warn_time = now
+            _dxl_warn_count = 0
+        return None
+
+AbstractDxlIO._send_packet = _patched_send_packet
+# --- MONKEY PATCH END ---
+
 from ._nicomotion_internal.MotionError import MotionErrorHandler
 from ._nicomotion_internal.RH4D_hand import RH4DHand
 from ._nicomotion_internal.RH5D_hand import RH5DHand
@@ -238,6 +266,19 @@ class Motion:
                         "Retrying initialization after an error occured"
                     )
                     time.sleep(1)
+                except Exception as e:
+                    # Catch broad exceptions like OSError (e.g. Input/output error on serial port)
+                    if retries < 3:
+                        self._logger.warning(
+                            "Unexpected error during initialization: {}. Retrying...".format(e)
+                        )
+                        retries += 1
+                        time.sleep(1)
+                    else:
+                        self._logger.error(
+                            ("Initialization failed after {} retries with unexpected error: {}").format(retries, e)
+                        )
+                        raise e
         time.sleep(3)  # wait for syncloop to initialize values
         # initialize hands
         # left hand
@@ -310,25 +351,37 @@ class Motion:
         ports = pypot.dynamixel.get_available_ports()
 
         if not ports:
-            raise OSError("No available ports found")
+            self._logger.warning("No available ports found - skipping latency adjustment")
+            return
 
         # find a port which has dynamixel motors attached
         ids = range(48)
         motors_found = False
         for port in ports:
-            try:
-                self._logger.info("connecting to {}".format(port))
-                dxl_io = pypot.dynamixel.DxlIO(port)
-                if len(dxl_io.scan(ids)) > 0:
-                    motors_found = True
-                    break
-            except DxlCommunicationError:
-                self._logger.warning(
-                    "Skipping {} due to communication error".format(port)
-                )
+            # Retry mechanism for potentially unstable connections
+            for attempt in range(3):
+                try:
+                    self._logger.info("connecting to {} (attempt {}/3)".format(port, attempt + 1))
+                    dxl_io = pypot.dynamixel.DxlIO(port)
+                    if len(dxl_io.scan(ids)) > 0:
+                        motors_found = True
+                        break
+                except DxlCommunicationError as e:
+                    self._logger.warning(
+                        "Communication error on {} (attempt {}/3): {}".format(port, attempt + 1, e)
+                    )
+                    time.sleep(0.5)
+                except Exception as e:
+                    self._logger.warning(
+                        "Unexpected error on {} (attempt {}/3): {}".format(port, attempt + 1, e)
+                    )
+                    time.sleep(0.5)
+            
+            if motors_found:
+                break
 
         if not motors_found:
-            raise OSError("No valid port found")
+            self._logger.warning("No valid port found - skipping latency adjustment")
 
         # set latency
         self._logger.info("Setting port {} to low latency".format(port))

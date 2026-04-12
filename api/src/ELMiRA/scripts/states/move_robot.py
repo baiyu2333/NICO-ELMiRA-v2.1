@@ -46,6 +46,8 @@ class JointTrajectoryIterator(smach.Iterator):
                         "positions_left",
                         "names_right",
                         "positions_right",
+                        "hand_action",
+                        "planning_group",
                     ],
                     outcomes=["succeeded"],
                 )
@@ -69,6 +71,10 @@ class JointTrajectoryIterator(smach.Iterator):
                     else:
                         userdata.names_right = []
                         userdata.positions_right = []
+                    
+                    # Optional inline hand action
+                    userdata.hand_action = joint_states.get("hand_action", None)
+                    userdata.planning_group = joint_states.get("planning_group", "r_arm")
                     return "succeeded"
 
                 smach.StateMachine.add(
@@ -86,7 +92,35 @@ class JointTrajectoryIterator(smach.Iterator):
                         srv_topic_right,
                         sub_topic_right,
                     ),
-                    transitions={"movement_done": "next_pose"},
+                    transitions={
+                        "movement_done": "CHECK_HAND_ACTION",
+                        "aborted": "aborted"
+                    },
+                )
+
+                # Check if we need to do an inline hand action after moving
+                @smach.cb_interface(
+                    input_keys=["hand_action"], 
+                    outcomes=["execute_hand", "skip_hand"]
+                )
+                def check_hand_cb(userdata):
+                    return "execute_hand" if userdata.hand_action else "skip_hand"
+
+                smach.StateMachine.add(
+                    "CHECK_HAND_ACTION",
+                    smach.CBState(check_hand_cb),
+                    {"execute_hand": "EXECUTE_HAND_ACTION", "skip_hand": "next_pose"},
+                )
+                
+                from states.hand_control import HandControl
+                smach.StateMachine.add(
+                    "EXECUTE_HAND_ACTION",
+                    HandControl(),
+                    {
+                        "succeeded": "next_pose", 
+                        "failed": "next_pose", 
+                        "no_action": "next_pose"
+                    },
                 )
 
             # close trajectory_sm
@@ -120,14 +154,15 @@ class MoveRobot(smach.Concurrence):
                 "names_right",
                 "positions_right",
             ],
-            outcomes=["movement_done"],
-            default_outcome="movement_done",
+            outcomes=["movement_done", "aborted"],
+            default_outcome="aborted",  # Safely abort if something isn't completely successful
+            child_termination_cb=lambda so: True if "aborted" in so.values() else False,
             outcome_map={
                 "movement_done": {
                     "MOVE_HEAD": "succeeded",
                     "MOVE_LEFT_ARM": "succeeded",
                     "MOVE_RIGHT_ARM": "succeeded",
-                }
+                },
             },
         )
         # Open the container

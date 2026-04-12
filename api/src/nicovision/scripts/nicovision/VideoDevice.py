@@ -28,6 +28,7 @@ NICO_EYES = {
         "usb-e-con_systems_See3CAM_CU135_2B08CD07-video-index0",
         "usb-e-con_systems_See3CAM_CU135_2722500C-video-index0",
         "usb-e-con_systems_See3CAM_CU135_2708CD07-video-index0",
+        "usb-e-con_systems_See3CAM_CU135_270B500C-video-index0",
     ),
     "right": (
         "usb-046d_080a_17E79161-video-index0",
@@ -36,6 +37,7 @@ NICO_EYES = {
         "usb-e-con_systems_See3CAM_CU135_2606CD07-video-index0",
         "usb-e-con_systems_See3CAM_CU135_22035000-video-index0",
         "usb-e-con_systems_See3CAM_CU135_260FCB07-video-index0",
+        "usb-e-con_systems_See3CAM_CU135_22275000-video-index0",
     ),
 }
 
@@ -55,6 +57,7 @@ NICO_EYES = {
         "usb-e-con_systems_See3CAM_CU135_09229807-video-index0",
         "usb-e-con_systems_See3CAM_CU135_2B08CD07-video-index0",
         "usb-e-con_systems_See3CAM_CU135_2722500C-video-index0",
+        "usb-e-con_systems_See3CAM_CU135_270B500C-video-index0",
     ),
     "right": (
         "usb-046d_080a_17E79161-video-index0",
@@ -62,6 +65,7 @@ NICO_EYES = {
         "usb-e-con_systems_See3CAM_CU135_36249807-video-index0",
         "usb-e-con_systems_See3CAM_CU135_2606CD07-video-index0",
         "usb-e-con_systems_See3CAM_CU135_22035000-video-index0",
+        "usb-e-con_systems_See3CAM_CU135_22275000-video-index0",
     ),
 }
 

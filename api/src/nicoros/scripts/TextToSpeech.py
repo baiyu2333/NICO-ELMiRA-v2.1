@@ -38,14 +38,20 @@ class NicoRosTTS(object):
         :return: duration
         :rtype: float
         """
-        duration = self.tts.say(
-            request.text,
-            request.language,
-            request.pitch,
-            request.speed,
-            request.blocking,
-        )
-        return duration
+        rospy.loginfo(f"Received speak request: '{request.text}' (blocking={request.blocking})")
+        try:
+            duration = self.tts.say(
+                request.text,
+                request.language,
+                request.pitch,
+                request.speed,
+                request.blocking,
+            )
+            rospy.loginfo(f"Speak finished. Duration: {duration}")
+            return duration
+        except Exception as e:
+            rospy.logerr(f"TTS Error: {e}")
+            return 0.0
 
 
 if __name__ == "__main__":

@@ -217,7 +217,7 @@ class NicoRosVision:
                 self._config["settings_file"],
                 self._config["setting"],
                 writer_threads=0,
-                pixel_format="UYVY",
+                pixel_format="MJPG",
             )
         except ValueError as exc:
             self._logger.error("Failed to initialize cameras: %s", exc)
