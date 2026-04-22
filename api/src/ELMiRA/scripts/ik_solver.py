@@ -61,17 +61,41 @@ class KinematicsServer:
         ]
         # solve trajectory
         results = []
-        for pose in request.poses:
+        for i, pose in enumerate(request.poses):
             ik_result = JointPosition()
             ik_result.joint_name = solver.joint_names[:6]
             pos = pose.position
             quat = pose.orientation
-            ik_result.position = solver.inverse_kinematics(
-                torch.tensor([pos.x, pos.y, pos.z]).to(self.device),
-                torch.tensor([quat.w, quat.x, quat.y, quat.z]).to(self.device),
-                initial_joints=initial_joints,
-                max_steps=100,
+            target_pos = torch.tensor([pos.x, pos.y, pos.z]).to(self.device)
+            target_quat = torch.tensor([quat.w, quat.x, quat.y, quat.z]).to(self.device)
+            try:
+                ik_result.position = solver.inverse_kinematics(
+                    target_pos,
+                    target_quat,
+                    initial_joints=initial_joints,
+                    max_steps=100,
+                )
+            except Exception as e:
+                rospy.logwarn(f"IK solver numeric crash (likely Cholesky fail at limit): {e}. Falling back to last known safe pose.")
+                ik_result.position = initial_joints
+            # Check IK solution quality
+            dist_err, angle_err = solver.get_euclidean_errors(
+                ik_result.position, target_pos, target_quat
             )
+            d = dist_err.detach().cpu().item()
+            a = torch.rad2deg(angle_err).detach().cpu().item()
+            if d > 0.01 or a > 20.0:
+                rospy.logwarn(
+                    f"IK solution POOR for pose {i} "
+                    f"(target=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})): "
+                    f"position_error={d:.4f}m, orientation_error={a:.1f}°. "
+                    f"Target may be outside reachable workspace!"
+                )
+            else:
+                rospy.loginfo(
+                    f"IK solution OK for pose {i}: "
+                    f"pos_err={d:.4f}m, orient_err={a:.1f}°"
+                )
             results.append(ik_result)
             # use solution as starting point for the next one
             initial_joints = ik_result.position

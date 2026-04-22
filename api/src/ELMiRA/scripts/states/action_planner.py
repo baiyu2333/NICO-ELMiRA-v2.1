@@ -5,32 +5,21 @@ import smach_ros
 
 from geometry_msgs.msg import Pose, Point, Quaternion
 from elmira.srv import (
-    DetectObjects,
     CoordinateTransfer,
     InverseKinematics,
     CheckLLMObjectVisibility,
     DetectWithMLLM,
 )
 
-# v2 MLLM configuration - read from ROS params
-def get_mllm_config():
-    """Get MLLM configuration from ROS params."""
-    use_mllm = rospy.get_param("/use_mllm", False)
-    use_mllm_grounding = rospy.get_param("/use_mllm_grounding", False)
-    
-    if use_mllm:
-        visibility_service = "mllm_visibility"
-        detection_service = "mllm_detect" if use_mllm_grounding else "object_detector"
-    else:
-        visibility_service = "llm_object_visibility"
-        detection_service = "object_detector"
-    
-    return {
-        "use_mllm": use_mllm,
-        "use_mllm_grounding": use_mllm_grounding,
-        "visibility_service": visibility_service,
-        "detection_service": detection_service,
-    }
+from utils.constants import (
+    LEFT_HAND_FUNCTIONAL,
+    HAND_REQUIRED_ACTIONS,
+    clamp_to_workspace,
+    get_arm_orientation,
+    get_point_orientation,
+    LLM_DETECT_SERVICE,
+    LLM_VISIBILITY_SERVICE,
+)
 
 
 class ObjectSelector(smach.State):
@@ -81,23 +70,36 @@ class ObjectSelector(smach.State):
         for obj in np.array(userdata.objects)[high_to_low]:
             bottom_x = obj.center_x
             bottom_y = obj.center_y + obj.height / 2
-            if self.within_workspace(bottom_x, bottom_y):
+            in_ws = self.within_workspace(bottom_x, bottom_y)
+            rospy.loginfo(
+                f"ObjectSelector: '{userdata.target_object}' candidate "
+                f"center=({obj.center_x:.3f}, {obj.center_y:.3f}), "
+                f"size=({obj.width:.3f}x{obj.height:.3f}), "
+                f"bottom=({bottom_x:.3f}, {bottom_y:.3f}), "
+                f"score={obj.score:.3f}, in_workspace={in_ws}"
+            )
+            if in_ws:
                 userdata.image_x = bottom_x
                 userdata.image_y = bottom_y
                 return "succeeded"
         rospy.logwarn(
-            f"SYSTEM: All {len(userdata.objects)} detected candidates for {userdata.target_object} in the image are out of reach."
+            f"SYSTEM: All {len(userdata.objects)} detected candidates for "
+            f"{userdata.target_object} in the image are out of reach. "
+            f"Workspace Y range: [{self.workspace[:, 1].min():.3f}, {self.workspace[:, 1].max():.3f}], "
+            f"X range: [{self.workspace[:, 0].min():.3f}, {self.workspace[:, 0].max():.3f}]"
         )
-        userdata.system_message = f"SYSTEM: All {len(userdata.objects)} detected candidates for {userdata.target_object} in the image or out of reach."
+        userdata.system_message = f"SYSTEM: All {len(userdata.objects)} detected candidates for {userdata.target_object} in the image are out of reach."
         return "object_out_of_reach"
 
 
 class ActionTrajectory(smach.State):
     """Generates target poses for robot actions.
     
-    Supports bimanual manipulation - arm selection based on target Y coordinate:
-    - target_y < 0: Right arm (r_arm)
-    - target_y >= 0: Left arm (l_arm)
+    Arm selection:
+    - Actions requiring hand control (grasp, place, etc.) ALWAYS use right arm
+      because left hand is physically broken.
+    - Non-hand actions (touch, push, show) select arm by target Y coordinate:
+      target_y < 0 → right arm, target_y >= 0 → left arm.
     
     Supported action types:
     - touch: Touch object with hand
@@ -109,15 +111,7 @@ class ActionTrajectory(smach.State):
     - close_hand: Signal to close gripper
     """
     
-    # Real-world workspace limits (meters) based on NICO arm URDF
-    # The arm has ~35cm reach from shoulder. Shoulder is ~3cm forward from torso center.
-    # Practical reachable range (avoiding full extension):
-    MAX_REACH_X = 0.32   # Max forward reach (meters)
-    MIN_REACH_X = 0.10   # Min forward reach
-    MAX_REACH_Y = 0.25   # Max left/right reach from center
-    
     def __init__(self):
-        # Your state initialization goes here
         smach.State.__init__(
             self,
             outcomes=["succeeded", "unknown_action", "hand_action"],
@@ -128,202 +122,134 @@ class ActionTrajectory(smach.State):
                 "hand_action",  # "open", "close", or None
             ],
         )
-    
-    def _clamp_coordinates(self, x, y):
-        """Clamp target coordinates to the robot's reachable workspace."""
-        orig_x, orig_y = x, y
-        x = max(self.MIN_REACH_X, min(self.MAX_REACH_X, x))
-        y = max(-self.MAX_REACH_Y, min(self.MAX_REACH_Y, y))
-        if orig_x != x or orig_y != y:
-            rospy.logwarn(
-                f"ActionTrajectory: Clamped coordinates from "
-                f"({orig_x:.3f}, {orig_y:.3f}) to ({x:.3f}, {y:.3f}) "
-                f"[workspace limits: x=[{self.MIN_REACH_X}, {self.MAX_REACH_X}], "
-                f"y=[{-self.MAX_REACH_Y}, {self.MAX_REACH_Y}]]"
-            )
-        return x, y
 
     def execute(self, userdata):
-        # Select arm based on target Y coordinate:
-        # - target_y < 0: right side of table -> right arm
-        # - target_y >= 0: left side of table -> left arm
-        # NOTE: Left hand (wrist/fingers) is non-functional, but left arm
-        # (shoulder/elbow) works and can be used for pointing/pushing
-        is_right = userdata.target_y < 0
+        action_lower = str(userdata.action_type).lower()
         
-        # Set default values for output keys (will be overwritten for grasp/place actions)
+        # Force right arm for any action that needs a working hand,
+        # because the left hand is physically broken.
+        if not LEFT_HAND_FUNCTIONAL and action_lower in HAND_REQUIRED_ACTIONS:
+            is_right = True
+            if userdata.target_y >= 0:
+                rospy.logwarn(
+                    f"ActionTrajectory: Object is on LEFT side (y={userdata.target_y:.3f}) "
+                    f"but forcing RIGHT arm because left hand is broken"
+                )
+        else:
+            # Non-hand actions: select arm by target Y coordinate
+            is_right = userdata.target_y < 0
+        
         userdata.planning_group = "r_arm" if is_right else "l_arm"
-        userdata.hand_action = None  # No hand action by default
+        userdata.hand_action = None
         
-        # Log and clamp coordinates to reachable workspace
+        # Clamp coordinates to reachable workspace
+        target_x, target_y, was_clamped = clamp_to_workspace(
+            userdata.target_x, userdata.target_y
+        )
+        if was_clamped:
+            dx = target_x - userdata.target_x
+            dy = target_y - userdata.target_y
+            reasons = []
+            if dx != 0:
+                reasons.append(f"X {'too far' if dx < 0 else 'too close'} (shifted {abs(dx):.3f}m)")
+            if dy != 0:
+                reasons.append(
+                    f"Y {'too far left' if dy < 0 else 'too far right'} "
+                    f"(shifted {abs(dy):.3f}m)"
+                )
+            rospy.logwarn(
+                f"ActionTrajectory: Target clamped! "
+                f"({userdata.target_x:.3f}, {userdata.target_y:.3f}) "
+                f"→ ({target_x:.3f}, {target_y:.3f}). "
+                f"Reason: {', '.join(reasons)}. "
+                f"r_shoulder_z limit is ±0.8rad — lateral reach is limited."
+            )
+        target_z = userdata.target_z
+        
         rospy.loginfo(
-            f"ActionTrajectory: action={userdata.action_type}, "
-            f"raw target=({userdata.target_x:.3f}, {userdata.target_y:.3f}, {userdata.target_z:.3f}), "
+            f"ActionTrajectory: action={action_lower}, "
+            f"target=({target_x:.3f}, {target_y:.3f}, {target_z:.3f}), "
             f"arm={'right' if is_right else 'left'}"
         )
-        target_x, target_y = self._clamp_coordinates(userdata.target_x, userdata.target_y)
-        target_z = userdata.target_z
         
         # calculate target for action
         target_poses = []
-        if userdata.action_type == "touch":
+        if action_lower == "touch":
             target_pose = Pose()
-            target_pose.position = Point(
-                target_x - 0.0, target_y, target_z
-            )
-            if is_right:  # x, y, z, w
-                target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-            else:
-                target_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+            target_pose.position = Point(target_x, target_y, target_z)
+            target_pose.orientation = get_arm_orientation(is_right)
             target_poses.append(target_pose)
-        elif userdata.action_type == "show":
+        elif action_lower == "show":
             target_pose = Pose()
-            # NOTE: Reduced X offset from -0.08 to -0.04 for better reachability
-            target_pose.position = Point(
-                target_x - 0.04, target_y, target_z + 0.03
-            )
-            if is_right:  # x, y, z, w
-                target_pose.orientation = Quaternion(-1.0, 0, 0, 0.0)
-            else:
-                target_pose.orientation = Quaternion(1.0, 0, 0, 0.0)
+            target_pose.position = Point(target_x - 0.04, target_y, target_z + 0.03)
+            target_pose.orientation = get_point_orientation(is_right)
             target_poses.append(target_pose)
-        elif userdata.action_type == "push":
-            for offset in [
-                (-0.04, 0.0, 0.0),
-                (0.03, 0.0, 0.0),
-                (0.06, 0.0, 0.0),
-                (0.06, 0.0, 0.10),
-            ]:
+        elif action_lower == "push":
+            for offset in [(-0.04, 0.0, 0.0), (0.03, 0.0, 0.0), (0.06, 0.0, 0.0), (0.06, 0.0, 0.10)]:
                 target_pose = Pose()
-                target_pose.position = Point(
-                    target_x + offset[0],
-                    target_y + offset[1],
-                    target_z + offset[2],
-                )
-                if is_right:  # x, y, z, w
-                    target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-                else:
-                    target_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+                target_pose.position = Point(target_x + offset[0], target_y + offset[1], target_z + offset[2])
+                target_pose.orientation = get_arm_orientation(is_right)
                 target_poses.append(target_pose)
-        elif userdata.action_type == "push_left":
-            # 08, 06
-            for offset in [
-                (0.04, -0.10, 0.10),
-                (0.04, -0.10, 0.0),
-                (0.04, 0.04, 0.0),
-                (0.04, 0.04, 0.10),
-            ]:
+        elif action_lower == "push_left":
+            for offset in [(-0.04, -0.10, 0.10), (0.04, -0.10, 0.0), (0.04, 0.04, 0.0), (0.04, 0.04, 0.10)]:
                 target_pose = Pose()
-                target_pose.position = Point(
-                    target_x + offset[0],
-                    target_y + offset[1],
-                    target_z + offset[2],
-                )
-                if is_right:  # x, y, z, w
-                    target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-                else:
-                    target_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+                target_pose.position = Point(target_x + offset[0], target_y + offset[1], target_z + offset[2])
+                target_pose.orientation = get_arm_orientation(is_right)
                 target_poses.append(target_pose)
-        elif userdata.action_type == "push_right":
-            for offset in [
-                (0.04, 0.10, 0.10),
-                (0.04, 0.10, 0.0),
-                (0.04, -0.04, 0.0),
-                (0.04, -0.04, 0.10),
-            ]:
+        elif action_lower == "push_right":
+            for offset in [(0.04, 0.10, 0.10), (0.04, 0.10, 0.0), (0.04, -0.04, 0.0), (0.04, -0.04, 0.10)]:
                 target_pose = Pose()
-                target_pose.position = Point(
-                    target_x + offset[0],
-                    target_y + offset[1],
-                    target_z + offset[2],
-                )
-                if is_right:  # x, y, z, w
-                    target_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-                else:
-                    target_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+                target_pose.position = Point(target_x + offset[0], target_y + offset[1], target_z + offset[2])
+                target_pose.orientation = get_arm_orientation(is_right)
                 target_poses.append(target_pose)
-        elif userdata.action_type == "grasp":
-            # Grasp Phase 1: ONLY the approach pose (hover above object).
-            # The descent, hand-close, and lift are deferred to the visual
-            # servoing refinement loop (GraspRefinement state) which will
-            # re-plan them with corrected coordinates after a second look.
-            approach_pose = Pose()
-            approach_pose.position = Point(
-                target_x - 0.02,  # Slightly behind
-                target_y,
-                target_z + 0.08,  # Above object
-            )
-            if is_right:
-                approach_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-            else:
-                approach_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
-            target_poses.append(approach_pose)
+        elif action_lower == "grasp":
+            # For grasping, first swing high to avoid knocking over objects
+            swing_pose = Pose()
+            swing_pose.position = Point(target_x, target_y, target_z + 0.06)
+            swing_pose.orientation = get_arm_orientation(is_right)
+            target_poses.append(swing_pose)
             
-            # No hand_action here - it will be set by the refinement state
+            # Hover directly above
+            hover_pose = Pose()
+            hover_pose.position = Point(target_x, target_y, target_z + 0.06)
+            hover_pose.orientation = get_arm_orientation(is_right)
+            target_poses.append(hover_pose)
+            
             userdata.hand_action = None
             
-        elif userdata.action_type == "place":
-            # Place sequence: lower to table, open hand, retreat
-            # 1. Pre-place pose (above target)
+        elif action_lower == "place":
+            orient = get_arm_orientation(is_right)
+            # 1. Pre-place (above target)
             preplace_pose = Pose()
-            preplace_pose.position = Point(
-                target_x,
-                target_y,
-                target_z + 0.10,  # Above placement
-            )
-            if is_right:
-                preplace_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-            else:
-                preplace_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+            preplace_pose.position = Point(target_x, target_y, target_z + 0.10)
+            preplace_pose.orientation = orient
             target_poses.append(preplace_pose)
-            
-            # 2. Place pose (at table level)
+            # 2. Place (at table level)
             place_pose = Pose()
-            place_pose.position = Point(
-                target_x,
-                target_y,
-                target_z + 0.02,  # Just above table
-            )
-            if is_right:
-                place_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-            else:
-                place_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+            place_pose.position = Point(target_x, target_y, target_z + 0.02)
+            place_pose.orientation = orient
             target_poses.append(place_pose)
-            
-            # Signal hand to open after reaching place pose
+            # Signal hand to open after placing
             userdata.hand_action = "open"
-            
-            # 3. Retreat pose (move back and up)
+            # 3. Retreat
             retreat_pose = Pose()
-            retreat_pose.position = Point(
-                target_x - 0.05,  # Move back
-                target_y,
-                target_z + 0.12,  # Lift up
-            )
-            if is_right:
-                retreat_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-            else:
-                retreat_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+            retreat_pose.position = Point(target_x - 0.05, target_y, target_z + 0.12)
+            retreat_pose.orientation = orient
             target_poses.append(retreat_pose)
             
-        elif userdata.action_type == "open_hand":
-            # Pure hand action - no arm movement
+        elif action_lower == "open_hand":
             userdata.hand_action = "open"
             userdata.planning_group = "r_hand" if is_right else "l_hand"
             userdata.poses = []
             return "hand_action"
-            
-        elif userdata.action_type == "close_hand":
-            # Pure hand action - no arm movement
+        elif action_lower == "close_hand":
             userdata.hand_action = "close"
             userdata.planning_group = "r_hand" if is_right else "l_hand"
             userdata.poses = []
             return "hand_action"
         else:
-            rospy.loginfo(f"Action '{userdata.action_type}' not defined")
-            userdata.system_message = (
-                f"SYSTEM: Action '{userdata.action_type}' not defined"
-            )
+            rospy.logwarn(f"Action '{action_lower}' not defined")
+            userdata.system_message = f"SYSTEM: Action '{action_lower}' not defined"
             return "unknown_action"
         
         # set output userdata
@@ -344,26 +270,14 @@ class ActionPlanner(smach.StateMachine):
     Hand control is signaled via hand_action output key.
     """
 
-    def __init__(
-        self,
-    ):
+    def __init__(self):
         super(ActionPlanner, self).__init__(
             input_keys=["action_type", "target_object", "table_z", "motion_init_pose"],
             output_keys=["joint_trajectory", "system_message", "real_x", "real_y", "hand_action", "planning_group"],
-            outcomes=[
-                "succeeded",
-                "preempted",
-                "aborted",
-                "system_out",
-            ],
+            outcomes=["succeeded", "preempted", "aborted", "system_out"],
         )
         
-        # Get MLLM configuration
-        mllm_config = get_mllm_config()
-        detection_service = mllm_config["detection_service"]
-        detection_srv_type = DetectWithMLLM if mllm_config["use_mllm_grounding"] else DetectObjects
-        
-        rospy.loginfo(f"ActionPlanner using detection service: {detection_service}")
+        rospy.loginfo(f"ActionPlanner using detection service: {LLM_DETECT_SERVICE}")
         
         # Open the container
         with self:
@@ -371,8 +285,8 @@ class ActionPlanner(smach.StateMachine):
             smach.StateMachine.add(
                 "OBJECT_DETECTION",
                 smach_ros.ServiceState(
-                    detection_service,
-                    detection_srv_type,
+                    LLM_DETECT_SERVICE,
+                    DetectWithMLLM,
                     request_slots=["texts"],
                     response_slots=["objects"],
                 ),
@@ -488,33 +402,17 @@ class ConcurrentPlanAndVerify(smach.Concurrence):
     Supports bimanual manipulation - passes through hand_action and planning_group.
     """
 
-    def __init__(
-        self,
-    ):
+    def __init__(self):
         super(ConcurrentPlanAndVerify, self).__init__(
-            input_keys=[
-                "action_type",
-                "target_object",
-                "llm_input",
-                "table_z",
-                "motion_init_pose",
-            ],
+            input_keys=["action_type", "target_object", "llm_input", "table_z", "motion_init_pose"],
             output_keys=["joint_trajectory", "system_message", "real_x", "real_y", "hand_action", "planning_group"],
-            outcomes=[
-                "succeeded",
-                "preempted",
-                "aborted",
-                "system_out",
-            ],
+            outcomes=["succeeded", "preempted", "aborted", "system_out"],
             default_outcome="system_out",
             child_termination_cb=self.child_termination_cb,
             outcome_cb=self.outcome_cb,
         )
         
-        # Get MLLM configuration for visibility service
-        mllm_config = get_mllm_config()
-        visibility_service = mllm_config["visibility_service"]
-        rospy.loginfo(f"ConcurrentPlanAndVerify using visibility service: {visibility_service}")
+        rospy.loginfo(f"ConcurrentPlanAndVerify using visibility: {LLM_VISIBILITY_SERVICE}")
         
         # Open the container
         with self:
@@ -532,7 +430,7 @@ class ConcurrentPlanAndVerify(smach.Concurrence):
             smach.Concurrence.add(
                 "CHECK_OBJECT_VISIBILITY",
                 smach_ros.ServiceState(
-                    visibility_service,
+                    LLM_VISIBILITY_SERVICE,
                     CheckLLMObjectVisibility,
                     request_slots=["prompt"],
                     response_slots=["system_message"],

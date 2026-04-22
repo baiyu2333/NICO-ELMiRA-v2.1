@@ -16,21 +16,8 @@ launch_process_nodes = None
 launch_process_sm = None
 roscore_process = None
 
-def launch_robot(provider, use_mllm_grounding, use_dummy, api_key, mic_device=""):
-    """
-    Launches:
-    1. init_nodes_v2.launch (Terminal 2)
-    2. state_machine.py (Terminal 3)
-    """
-    global launch_process_nodes, launch_process_sm, displayed_cmd_nodes, displayed_cmd_sm
-    
-    # ... (Checks) ...
-    
-    # Update Globals for Display
-    displayed_cmd_nodes = cmd_nodes
-    displayed_cmd_sm = cmd_sm
-    
-    # ... (Launch Logic) ...
+# NOTE: launch_robot is defined below (line ~142) with full parameter list.
+# This file was cleaned up to remove a duplicate stub definition.
 
 def read_log_safe(path, lines=20):
     if not os.path.exists(path):
@@ -40,7 +27,7 @@ def read_log_safe(path, lines=20):
         with open(path, 'r') as f:
             all_lines = f.readlines()
             return "".join(all_lines[-lines:])
-    except:
+    except Exception:
         return "Error reading log."
 
 def refresh_terminals():
@@ -248,10 +235,11 @@ def stop_robot():
         try:
             os.killpg(os.getpgid(launch_process_sm.pid), signal.SIGINT)
             launch_process_sm.wait(timeout=2)
-        except:
+        except (ProcessLookupError, OSError):
             try:
                  os.killpg(os.getpgid(launch_process_sm.pid), signal.SIGKILL)
-            except: pass
+            except (ProcessLookupError, OSError):
+                 pass
         launch_process_sm = None
         status.append("Stopped State Machine")
 
@@ -259,10 +247,11 @@ def stop_robot():
         try:
             os.killpg(os.getpgid(launch_process_nodes.pid), signal.SIGINT)
             launch_process_nodes.wait(timeout=5)
-        except:
+        except (ProcessLookupError, OSError):
              try:
                  os.killpg(os.getpgid(launch_process_nodes.pid), signal.SIGKILL)
-             except: pass
+             except (ProcessLookupError, OSError):
+                 pass
         launch_process_nodes = None
         status.append("Stopped Nodes")
 
@@ -270,19 +259,8 @@ def stop_robot():
         try:
              monitor_process.terminate()
              monitor_process.wait(timeout=1)
-        except: pass
-        # Don't set to None immediately if we want to restart it? 
-        # Actually start_monitor_thread creates a new one.
-        # But global variable needs to be cleared or re-assigned.
-        # The start_monitor_thread loop checks 'check_ros_status'.
-        # If ROS is stopped, the loop keeps spinning waiting for ROS.
-        # If we kill the process, the loop crashes or needs to restart the process.
-        # Implemented logic: wrapper loop inside thread.
-        # But wait, start_monitor_thread just runs the function.
-        # monitor_conversation_loop starts one process and reads it until EOF.
-        # If we kill the process, readline returns empty -> loop breaks.
-        # The thread terminates.
-        # Perfect.
+        except (ProcessLookupError, OSError):
+             pass
         status.append("Stopped Monitor")
 
     if not status:
@@ -291,8 +269,7 @@ def stop_robot():
 
 def get_launch_logs():
     """Generator to stream launch logs"""
-    global launch_process
-    if not launch_process:
+    if not launch_process_nodes:
         yield "Robot not running..."
         return
         
@@ -661,7 +638,7 @@ with gr.Blocks(title="ELMiRA Ops Center", theme=gr.themes.Soft()) as demo:
                     gr.Markdown("### 📐 Calibration Offsets")
                     offset_x_sld = gr.Slider(label="X Offset (Forward/Back)", minimum=-0.2, maximum=0.2, value=0.0, step=0.01)
                     offset_y_sld = gr.Slider(label="Y Offset (Left/Right)", minimum=-0.2, maximum=0.2, value=0.0, step=0.01)
-                    offset_z_sld = gr.Slider(label="Z Offset (Up/Down)", minimum=-0.2, maximum=0.2, value=0.0, step=0.01)
+                    offset_z_sld = gr.Slider(label="Z Offset (Up/Down)", minimum=-0.4, maximum=0.4, value=0.0, step=0.01)
                 
                 with gr.Column():
                     gr.Markdown("### Status")

@@ -34,8 +34,7 @@
     "r_hand": [
       "r_wrist_z",
       "r_wrist_x",
-      "r_indexfingers_x",
-      "r_virtualhand_x"
+      "r_indexfingers_x"
     ],
     "hands": [
       "r_hand"
@@ -171,17 +170,6 @@
         160
       ],
       "orientation": "indirect"
-    },
-    "r_virtualhand_x": {
-      "offset": 0.0,
-      "type": "SR-EROSBRD",
-      "id": 32,
-      "angle_limit": [
-        -160,
-        160
-      ],
-      "orientation": "direct",
-      "comment": "Right virtual hand - ID 32 (not detected in scan)"
     }
   }
 }

@@ -12,12 +12,11 @@ from nicomsg.srv import SayText
 from nicomsg.msg import empty
 from std_msgs.msg import String
 
+from utils.constants import LLM_CHAT_SERVICE, LLM_VISION_SERVICE
+from utils.response_parser import parse_llm_actions
+
 # Global publisher for dashboard conversation
 conversation_pub = None
-
-# v2 MLLM switching - services use same types but different endpoints
-# PromptTextLLM used for both llm_chat (v1) and mllm_chat (v2)
-# PromptVisionLLM used for both llm_vision (v1) and mllm_vision (v2)
 
 from states.move_robot import JointTrajectoryIterator, MoveRobotPart, MoveRobot
 from states.action_planner import ConcurrentPlanAndVerify
@@ -29,30 +28,10 @@ from states.grasp_refinement import GraspRefinement
 def main():
     rospy.init_node("elmira_state_machine")
 
-    # v2 MLLM configuration - controls v1/v2 service routing
-    use_mllm = rospy.get_param("/use_mllm", False)
-    use_mllm_grounding = rospy.get_param("/use_mllm_grounding", False)
-    mllm_provider = rospy.get_param("/mllm_provider", "openai")
-    
-    # Select service names based on v1/v2 mode
-    if use_mllm:
-        rospy.loginfo("ELMiRA: Using MLLM v2 gateway (provider: %s)", mllm_provider)
-        LLM_CHAT_SERVICE = "mllm_chat"
-        LLM_VISION_SERVICE = "mllm_vision"
-        LLM_VISIBILITY_SERVICE = "mllm_visibility"
-    else:
-        rospy.loginfo("ELMiRA: Using legacy LLM v1 services")
-        LLM_CHAT_SERVICE = "llm_chat"
-        LLM_VISION_SERVICE = "llm_vision"
-        LLM_VISIBILITY_SERVICE = "llm_object_visibility"
+    rospy.loginfo("ELMiRA: Using MLLM v2 gateway")
 
     # Create a state machine
     sm = smach.StateMachine(outcomes=["succeeded", "aborted", "preempted"])
-    
-    # Store v2 config in userdata for access in states
-    sm.userdata.use_mllm = use_mllm
-    sm.userdata.use_mllm_grounding = use_mllm_grounding
-    sm.userdata.mllm_provider = mllm_provider
 
     # set topic names(TODO change into proper NICO paths TODO turn into rospy param?)
     MOTION_SUB_LEFT = "/left/open_manipulator_p/joint_states"
@@ -106,31 +85,23 @@ def main():
                 "head_z",
                 "head_y",
             ],
-            "positions": [0.0, 0.0],  # [0.0, 0.8203],
+            "positions": [0.0, 0.0],
         },
     }
     sm.userdata.motion_safe_names_left = [
-        "l_shoulder_z",
-        "l_shoulder_y",
-        "l_arm_x",
-        "l_elbow_y",
-        "l_wrist_z",
-        "l_wrist_x",
+        "l_shoulder_z", "l_shoulder_y", "l_arm_x",
+        "l_elbow_y", "l_wrist_z", "l_wrist_x",
     ]
     sm.userdata.motion_safe_pose_left = [0.157, 0.0, 0.8203, 1.57, 1.39, 0.0]
     sm.userdata.motion_safe_names_right = [
-        "r_shoulder_z",
-        "r_shoulder_y",
-        "r_arm_x",
-        "r_elbow_y",
-        "r_wrist_z",
-        "r_wrist_x",
+        "r_shoulder_z", "r_shoulder_y", "r_arm_x",
+        "r_elbow_y", "r_wrist_z", "r_wrist_x",
     ]
     sm.userdata.motion_safe_pose_right = [-0.157, 0.0, -0.8203, -1.57, -1.39, 0.0]
     sm.userdata.motion_look_down_names = ["head_z", "head_y"]
     # Note: Negative head_y looks DOWN, positive looks UP
-    sm.userdata.motion_look_down_positions = [0.0, -0.8203]
-    base_table_z = 0.68
+    sm.userdata.motion_look_down_positions = [0.0, -0.5]
+    base_table_z = 0.7
     offset_z = rospy.get_param("/elmira/offset_z", 0.0)
     sm.userdata.table_z = base_table_z + offset_z
     rospy.loginfo(f"Table Z set to {sm.userdata.table_z} (Base {base_table_z} + Offset {offset_z})")
@@ -180,13 +151,8 @@ def main():
                 "speech_asr",
                 PerformASRAction,
                 goal_slots=[
-                    "detect_start",
-                    "detect_stop",
-                    "start_timeout",
-                    "min_duration",
-                    "max_duration",
-                    "min_period",
-                    "live_text",
+                    "detect_start", "detect_stop", "start_timeout",
+                    "min_duration", "max_duration", "min_period", "live_text",
                 ],
                 result_cb=asr_result_callback,
                 output_keys=["llm_input"],
@@ -204,20 +170,10 @@ def main():
             },
         )
 
-        # callback to post-process detected objects
+        # callback to post-process LLM response
         def llm_response_callback(userdata, response):
             rospy.loginfo(f"LLM output:\n{response.response}")
-            parsed = json.loads(response.response)
-            # Handle both formats: {"actions": [...]} or {"action": "...", ...}
-            if "actions" in parsed:
-                actions_list = parsed["actions"]
-            elif "action" in parsed:
-                # Single action format - wrap in list
-                actions_list = [parsed]
-            else:
-                # Fallback - treat entire response as a speak action
-                actions_list = [{"action": "speak", "text": response.response}]
-            
+            actions_list = parse_llm_actions(response.response)
             userdata.llm_actions = actions_list
 
             # Publish robot response to conversation
@@ -359,30 +315,18 @@ def main():
 
                 def llm_scene_description_callback(userdata, response):
                     rospy.loginfo(f"LLM output:\n{response.response}")
-                    parsed = json.loads(response.response)
-                    # Handle both formats: {"actions": [...]} or {"action": "...", ...}
-                    actions_list = []
-                    if "actions" in parsed:
-                        actions_list = parsed["actions"]
-                    elif "action" in parsed:
-                        # Single action format - wrap in list
-                        actions_list = [parsed]
-                    else:
-                        # Fallback - treat entire response as a speak action
-                        actions_list = [{"action": "speak", "text": response.response}]
-                    
+                    actions_list = parse_llm_actions(response.response)
                     userdata.llm_actions = actions_list
                     
-                    # --- Publish to Dashboard Chat ---
-                    for act in actions_list:
-                        if act["action"] == "speak":
-                            conversation_pub.publish(f"ROBOT: {act['text']}")
-                        elif act["action"] == "describe":
-                             conversation_pub.publish("ROBOT: *Describing scene...*")
-                        elif act["action"] == "act":
-                             obj = act.get("object", "object")
-                             conversation_pub.publish(f"ROBOT: *Acting on {obj}*")
-                    # ---------------------------------
+                    if conversation_pub:
+                        for act in actions_list:
+                            if act.get("action") == "speak":
+                                conversation_pub.publish(f"ROBOT: {act.get('text', '')}")
+                            elif act.get("action") == "describe":
+                                conversation_pub.publish("ROBOT: *Describing scene...*")
+                            elif act.get("action") == "act":
+                                obj = act.get("object", "object")
+                                conversation_pub.publish(f"ROBOT: *Acting on {obj}*")
 
                     return "succeeded"
 
@@ -467,7 +411,7 @@ def main():
                 def check_grasp_refine_cb(userdata):
                     action = str(userdata.action_type).lower()
                     if action in ["grasp", "grab", "pick", "take"]:
-                        rospy.loginfo("Grasp detected: Starting visual servoing refinement")
+                        rospy.loginfo("Grasp detected: Starting multi-stage visual servoing refinement")
                         return "needs_refinement"
                     return "done"
                 
@@ -475,23 +419,77 @@ def main():
                     "CHECK_GRASP_REFINE",
                     smach.CBState(check_grasp_refine_cb),
                     {
-                        "needs_refinement": "GRASP_REFINEMENT",
+                        "needs_refinement": "PREPARE_STAGE2",
                         "done": "next_action",
                     },
                 )
                 
-                # Visual servoing: take a second picture, get correction from GPT,
-                # plan the final descent + grasp + lift with corrected coordinates
+                # Setup parameters for Stage 2 Macro-refinement (Right Eye, no close)
+                @smach.cb_interface(
+                    input_keys=[],
+                    output_keys=["camera_eye", "close_hand"],
+                    outcomes=["done"],
+                )
+                def prepare_stage2_cb(userdata):
+                    userdata.camera_eye = "right"
+                    userdata.close_hand = False
+                    return "done"
+                    
                 smach.StateMachine.add(
-                    "GRASP_REFINEMENT",
+                    "PREPARE_STAGE2",
+                    smach.CBState(prepare_stage2_cb),
+                    {"done": "GRASP_REFINEMENT_STAGE2"}
+                )
+                
+                # Visual servoing Stage 2: right eye observation and horizontal slide
+                smach.StateMachine.add(
+                    "GRASP_REFINEMENT_STAGE2",
                     GraspRefinement(),
                     transitions={
-                        "succeeded": "GRASP_FINAL_EXECUTE",
+                        "succeeded": "GRASP_STAGE2_EXECUTE",
                         "aborted": "next_action",  # Fall back on failure
                     },
                 )
                 
-                # Execute the refined grasp trajectory (descent + close + lift + return)
+                # Execute Stage 2 Refinement
+                smach.StateMachine.add(
+                    "GRASP_STAGE2_EXECUTE",
+                    JointTrajectoryIterator(
+                        MOTION_SRV_HEAD, MOTION_SUB_HEAD,
+                        MOTION_SRV_LEFT, MOTION_SUB_LEFT,
+                        MOTION_SRV_RIGHT, MOTION_SUB_RIGHT,
+                    ),
+                    {"succeeded": "PREPARE_STAGE3"},
+                )
+                
+                # Setup parameters for Stage 3 Micro-refinement (Left Eye, close hand)
+                @smach.cb_interface(
+                    input_keys=[],
+                    output_keys=["camera_eye", "close_hand"],
+                    outcomes=["done"],
+                )
+                def prepare_stage3_cb(userdata):
+                    userdata.camera_eye = "left"
+                    userdata.close_hand = True
+                    return "done"
+                    
+                smach.StateMachine.add(
+                    "PREPARE_STAGE3",
+                    smach.CBState(prepare_stage3_cb),
+                    {"done": "GRASP_REFINEMENT_STAGE3"}
+                )
+                
+                # Visual servoing Stage 3: left eye unoccluded observation
+                smach.StateMachine.add(
+                    "GRASP_REFINEMENT_STAGE3",
+                    GraspRefinement(),
+                    transitions={
+                        "succeeded": "GRASP_FINAL_EXECUTE",
+                        "aborted": "VERIFY_GRASP",  # Try to grasp anyway if refinement fails
+                    },
+                )
+                
+                # Execute the final refined grasp trajectory (slide to close + lift)
                 smach.StateMachine.add(
                     "GRASP_FINAL_EXECUTE",
                     JointTrajectoryIterator(
@@ -502,7 +500,55 @@ def main():
                         MOTION_SRV_RIGHT,
                         MOTION_SUB_RIGHT,
                     ),
-                    {"succeeded": "next_action"},
+                    {"succeeded": "VERIFY_GRASP"},
+                )
+                
+                # Verify grasp success using palm sensor and override remaining LLM actions
+                @smach.cb_interface(
+                    input_keys=["planning_group", "llm_actions", "action_index", "target_object"],
+                    output_keys=["llm_actions"],
+                    outcomes=["next_action"],
+                )
+                def verify_grasp_cb(userdata):
+                    from states.hand_control import PalmSensorMonitor
+                    palm = PalmSensorMonitor()
+                    rospy.sleep(0.5)  # Let sensor settle
+                    
+                    planning_group = userdata.planning_group or "r_arm"
+                    side = "left" if "l_" in planning_group else "right"
+                    grasped = palm.is_grasping(side)
+                    reading = palm.get_reading(side)
+                    
+                    target = userdata.target_object
+                    if isinstance(target, (list, tuple)):
+                        target = target[0] if target else "the object"
+                    
+                    # Replace all remaining actions after the current grasp action
+                    # with a truthful response based on sensor feedback
+                    current_idx = userdata.action_index
+                    kept_actions = userdata.llm_actions[:current_idx + 1]
+                    
+                    if grasped:
+                        rospy.loginfo(f"VERIFY_GRASP: Success! Palm sensor={reading}, side={side}")
+                        kept_actions.append({
+                            "action": "speak",
+                            "text": f"I've successfully grasped {target}."
+                        })
+                    else:
+                        rospy.logwarn(f"VERIFY_GRASP: Failed! Palm sensor={reading}, side={side}")
+                        kept_actions.append({
+                            "action": "speak",
+                            "text": f"I tried to grasp {target}, but I don't think I got it. "
+                                    f"Could you move it closer and ask me to try again?"
+                        })
+                    
+                    userdata.llm_actions = kept_actions
+                    return "next_action"
+                
+                smach.StateMachine.add(
+                    "VERIFY_GRASP",
+                    smach.CBState(verify_grasp_cb),
+                    {"next_action": "next_action"},
                 )
 
             # close execute_actions_sm

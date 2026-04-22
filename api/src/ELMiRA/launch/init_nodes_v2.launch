@@ -16,7 +16,7 @@
     
     <!-- Calibration Offsets -->
     <arg name="offset_x" default="0.0" doc="Calibration offset for X axis (meters)"/>
-    <arg name="offset_y" default="0.0" doc="Calibration offset for Y axis (meters)"/>
+    <arg name="offset_y" default="0.105" doc="Calibration offset for Y axis (meters)"/>
     <arg name="mllm_model" default="" doc="Model name (empty for provider default)"/>
     <arg name="use_owlv2_fallback" default="false" doc="Launch OWLv2 as fallback"/>
     <arg name="use_mllm_grounding" default="true" doc="Use MLLM for object detection"/>
@@ -32,8 +32,10 @@
     <arg name="energy_dynamic" default="true" doc="Dynamically adjust energy thresholds"/>
     <arg name="mic_device" default="" doc="Microphone device index or name"/>
     
-    <!-- Camera -->
-    <include file="$(find elmira)/launch/camera.launch"/>
+    <!-- Camera (Stereo to enable both eyes for cross-referencing) -->
+    <include file="$(find elmira)/launch/camera.launch">
+        <arg name="mode" value="stereo"/>
+    </include>
     
     <!-- Derived argument for required nodes (only required if NOT dummy) -->
     <arg name="required_val" value="false" if="$(arg dummy)"/>

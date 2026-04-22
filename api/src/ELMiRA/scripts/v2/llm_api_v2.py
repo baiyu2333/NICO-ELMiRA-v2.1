@@ -83,9 +83,15 @@ class MLLMGateway:
         self.provider: Optional[BaseMLLMProvider] = None
         self._init_provider()
         
-        # Initialize image cache
+        # Initialize original image cache
         self.image_cache = CachedImageGrabber(
             topic=self.image_topic,
+            cache_duration=self.cache_duration,
+        )
+        
+        # Dedicated left eye cache for grasp refinement to avoid right-arm occlusion
+        self.left_eye_cache = CachedImageGrabber(
+            topic="/nico/vision/left",
             cache_duration=self.cache_duration,
         )
         
@@ -429,20 +435,24 @@ class MLLMGateway:
         rospy.loginfo(f"Grasp refinement request for: {target_object}")
         
         start_time = time.time()
-        
         try:
-            # Get fresh camera frame (hand should be visible near the object)
-            image = self._get_image()
-            
+            # Determine which eye to use based on parameter
+            camera_eye = rospy.get_param("/mllm_refine_eye", "right").lower()
+            if camera_eye == "left":
+                image = self.left_eye_cache.get_frame()
+                eye_desc = "LEFT eye, which gives you a slightly angled, unblocked side-view"
+            else:
+                image = self.image_cache.get_frame()
+                eye_desc = "main RIGHT eye (forehead camera)"
+                
             prompt = (
-                f"You are controlling a robot arm. The robot's hand is currently "
-                f"hovering above the table, trying to reach the '{target_object}'. "
-                f"Look at the image and estimate how far the robot's hand (the "
-                f"mechanical gripper/fingers visible in the image) needs to move "
-                f"to be directly above the '{target_object}'.\n\n"
+                f"You are controlling a robot arm. You are looking through the robot's {eye_desc}. "
+                f"The robot's right mechanical hand is currently reaching forward horizontally, attempting to clamp the '{target_object}'. "
+                f"Estimate how far the right hand (the mechanical gripper) needs to move "
+                f"to perfectly clamp the '{target_object}'. The hand does NOT need to move down, just horizontal alignment.\n\n"
                 f"Coordinate system:\n"
-                f"- x_offset_meters: positive = move hand FORWARD (away from robot), "
-                f"negative = move hand BACKWARD (toward robot)\n"
+                f"- x_offset_meters: positive = move hand FORWARD (push deeper into object), "
+                f"negative = move hand BACKWARD (pull away from object)\n"
                 f"- y_offset_meters: positive = move hand LEFT (from robot's perspective), "
                 f"negative = move hand RIGHT\n\n"
                 f"The table is about 50cm wide and 40cm deep from the robot's perspective. "

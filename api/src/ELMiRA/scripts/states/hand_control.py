@@ -122,14 +122,39 @@ class HandControl(smach.State):
     
     # Right hand positions (in degrees)
     RIGHT_HAND_OPEN = {
-        "r_indexfingers_x": -150,  # Index open
-        "r_virtualhand_x": -150,   # Virtual hand (thumb+middle) open
+        "r_indexfingers_x": 120,   # Index open
+        "r_virtualhand_x": 120,    # Virtual hand (thumb+middle) open
     }
     
     RIGHT_HAND_CLOSE = {
-        "r_indexfingers_x": 120,   # Index closed
-        "r_virtualhand_x": 120,    # Virtual hand closed
+        "r_indexfingers_x": -150,  # Index closed
+        "r_virtualhand_x": -150,   # Virtual hand closed
     }
+    
+    # Left hand XL-320 motor IDs (Protocol 2.0)
+    LEFT_HAND_MOTOR_IDS = {
+        "l_wrist_z":          30,   # Forearm rotation
+        "l_wrist_x":          31,   # Wrist flex  
+        "l_thumb_x":          33,   # Thumb
+        "l_indexfinger_x":    34,   # Index finger
+        "l_middlefingers_x":  35,   # Middle finger
+        "l_ring_x":           36,   # Ring finger (coupled with middle)
+        "l_pinky_x":          37,   # Pinky (coupled with middle)
+    }
+    
+    # Left hand finger IDs only (for open/close, excluding wrist)
+    # 34: Thumb base, 35: Thumb joint, 36: Index, 37: Other fingers
+    LEFT_FINGER_IDS = [34, 35, 36, 37]
+    
+    # Left wrist motor IDs (also XL-320)
+    LEFT_WRIST_IDS = {
+        31: 0.0,    # 小臂腕 (forearm rotation) -> neutral
+        33: 0.0,    # 手腕 (wrist flex) -> neutral
+    }
+    
+    # Positions for XL-320 left hand
+    LEFT_HAND_OPEN_POS = -150.0    # All fingers fully open
+    LEFT_HAND_CLOSE_POS = 60.0     # All fingers closed for grasping
     
     def __init__(self):
         smach.State.__init__(
@@ -139,9 +164,14 @@ class HandControl(smach.State):
             output_keys=[],
         )
         
-        # Publishers for direct motor control
+        # Publishers for direct motor control (right hand Protocol 1.0)
         self._pub_set_angle = rospy.Publisher(
             "/nico/motion/setAngle", nicomsg.msg.sff, queue_size=10
+        )
+        
+        # Publisher for XL-320 left hand commands (Protocol 2.0 via Motion node)
+        self._pub_xl320 = rospy.Publisher(
+            "/nico/motion/xl320_cmd", nicomsg.msg.sff, queue_size=10
         )
         
         # Palm sensor monitor
@@ -160,7 +190,7 @@ class HandControl(smach.State):
     def _move_hand_motors(self, side: str, action: str):
         """Send direct motor commands for the hand."""
         if side == "left":
-            rospy.logwarn("HandControl: Left hand direct motor control not implemented (XL-320 conflict)")
+            self._move_left_hand_xl320(action)
             return
             
         positions = self.RIGHT_HAND_OPEN if action == "open" else self.RIGHT_HAND_CLOSE
@@ -172,6 +202,66 @@ class HandControl(smach.State):
             msg.param3 = 1.0  # max speed fraction
             self._pub_set_angle.publish(msg)
             rospy.logdebug(f"HandControl: Published {motor_name} = {position}")
+            rospy.sleep(0.1)
+    
+    def _move_left_hand_xl320(self, action: str):
+        """Control the left hand via XL-320 Protocol 2.0.
+        
+        Sends commands through the /nico/motion/xl320_cmd ROS topic,
+        which is handled by the Motion node using its own serial connection
+        and pypot lock to safely send Protocol 2.0 packets.
+        """
+        target_pos = self.LEFT_HAND_OPEN_POS if action == "open" else self.LEFT_HAND_CLOSE_POS
+        
+        # Convert degrees to XL-320 raw value (0-1023, center=512)
+        raw_pos = int((target_pos + 150.0) / 300.0 * 1023.0)
+        raw_pos = max(0, min(1023, raw_pos))
+        
+        try:
+            rospy.loginfo(f"HandControl: XL-320 left hand {action} via ROS topic...")
+            
+            # ALL left hand XL-320 motor IDs (wrist + fingers)
+            all_motor_ids = list(self.LEFT_WRIST_IDS.keys()) + self.LEFT_FINGER_IDS
+            
+            # Step 1: Enable torque on ALL motors (register 24 = 1)
+            for motor_id in all_motor_ids:
+                self._send_xl320_cmd(motor_id, 24, 1)
+                rospy.sleep(0.005)
+            rospy.loginfo(f"HandControl: Torque enabled for XL-320 motors {all_motor_ids}")
+            
+            # Step 2: Set moving speed (register 32 = 150)
+            for motor_id in all_motor_ids:
+                self._send_xl320_cmd(motor_id, 32, 150)
+                rospy.sleep(0.005)
+            
+            # Step 3: Set wrist positions (register 30 = goal position)
+            for wrist_id, wrist_deg in self.LEFT_WRIST_IDS.items():
+                raw_wrist = int((wrist_deg + 150.0) / 300.0 * 1023.0)
+                raw_wrist = max(0, min(1023, raw_wrist))
+                self._send_xl320_cmd(wrist_id, 30, raw_wrist)
+                rospy.sleep(0.005)
+            rospy.loginfo("HandControl: Left wrist set to neutral")
+            
+            # Step 4: Set finger positions
+            for motor_id in self.LEFT_FINGER_IDS:
+                self._send_xl320_cmd(motor_id, 30, raw_pos)
+                rospy.sleep(0.005)
+            
+            rospy.loginfo(
+                f"HandControl: Left hand XL-320 {action} -> "
+                f"fingers {self.LEFT_FINGER_IDS} to {target_pos}° (raw={raw_pos})"
+            )
+        except Exception as e:
+            rospy.logerr(f"HandControl: XL-320 left hand {action} error: {e}")
+    
+    def _send_xl320_cmd(self, motor_id: int, register: int, value: int):
+        """Send a single XL-320 command via the Motion node's ROS topic."""
+        msg = nicomsg.msg.sff()
+        msg.param1 = str(motor_id)
+        msg.param2 = float(register)
+        msg.param3 = float(value)
+        self._pub_xl320.publish(msg)
+    
 
     def _open_hand(self, side: str) -> bool:
         """Open the specified hand."""

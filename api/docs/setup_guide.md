@@ -52,7 +52,7 @@ usb-e-con_systems_See3CAM_CU135_XXXXXXXX-video-index0
 ### 1.4 Test Camera Access
 ```bash
 # Quick camera test (requires v4l-utils)
-v4l2-ctl -d /dev/video0 --all
+
 
 # Or test with Python
 python3 -c "
@@ -163,6 +163,11 @@ roslaunch elmira init_nodes_v2.launch mllm_provider:=google
 # OR with OpenAI provider
 roslaunch elmira init_nodes_v2.launch mllm_provider:=openai
 ```
+source ~/catkin_ws/src/NICO-software/api/devel/setup.bash
+python3 ~/catkin_ws/src/NICO-software/api/src/ELMiRA/scripts/visualize_workspace.py
+
+source ~/catkin_ws/src/NICO-software/api/devel/setup.bash
+rqt_image_view /elmira/workspace_debug
 
 ---
 

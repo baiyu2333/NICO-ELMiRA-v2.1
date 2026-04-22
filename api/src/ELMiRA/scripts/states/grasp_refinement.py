@@ -20,11 +20,12 @@ import rospy
 import smach
 import smach_ros
 
-from geometry_msgs.msg import Pose, Point, Quaternion
+from geometry_msgs.msg import Pose, Point
 from elmira.srv import (
     PromptVisionLLM,
     InverseKinematics,
 )
+from utils.constants import clamp_to_workspace, get_arm_orientation
 
 
 class GraspRefinement(smach.StateMachine):
@@ -54,9 +55,9 @@ class GraspRefinement(smach.StateMachine):
             input_keys=[
                 "real_x", "real_y", "table_z",
                 "planning_group", "motion_init_pose",
-                "target_object",
+                "target_object", "camera_eye", "close_hand",
             ],
-            output_keys=["joint_trajectory", "hand_action", "planning_group"],
+            output_keys=["joint_trajectory", "hand_action", "planning_group", "real_x", "real_y"],
             outcomes=["succeeded", "aborted", "preempted"],
         )
         
@@ -96,17 +97,20 @@ class GraspRefinement(smach.StateMachine):
                             "positions": position.position,
                         }
                     }
-                    # Step 0 = refined grasp pose, Step 1 = lift
-                    # Insert hand close after reaching grasp pose
-                    if i == 0:
+                    # Step 0 = hover pose, Step 1 = refined grasp pose, Step 2 = lift
+                    # Insert hand close after reaching grasp pose if close_hand is True
+                    if i == 1 and getattr(userdata, "close_hand", True):
                         step["hand_action"] = "close"
-                        step["planning_group"] = userdata.planning_group
+                    else:
+                        step["hand_action"] = None
                     
                     trajectory.append(step)
-                
-                # Append return to init pose
-                userdata.joint_trajectory = trajectory + [userdata.motion_init_pose]
-                userdata.hand_action = "close"
+                # Only append return to init pose if this is the final grasping stage
+                if getattr(userdata, "close_hand", True):
+                    userdata.joint_trajectory = trajectory + [userdata.motion_init_pose]
+                else:
+                    userdata.joint_trajectory = trajectory
+                    
                 return "succeeded"
             
             smach.StateMachine.add(
@@ -114,7 +118,7 @@ class GraspRefinement(smach.StateMachine):
                 smach_ros.ServiceState(
                     "inverse_kinematics",
                     InverseKinematics,
-                    input_keys=["planning_group", "motion_init_pose", "refined_poses"],
+                    input_keys=["planning_group", "motion_init_pose", "refined_poses", "close_hand"],
                     request_slots=["planning_group", "poses"],
                     output_keys=["joint_trajectory", "hand_action"],
                     request_cb=ik_request_cb,
@@ -136,19 +140,22 @@ class CallRefinementService(smach.State):
         smach.State.__init__(
             self,
             outcomes=["succeeded", "failed"],
-            input_keys=["real_x", "real_y", "target_object"],
+            input_keys=["real_x", "real_y", "target_object", "camera_eye"],
             output_keys=["x_correction", "y_correction"],
         )
     
     def execute(self, userdata):
-        # Set the target object in ROS param so the MLLM gateway knows what we're grasping
+        # Set parameters for the MLLM gateway
         target_name = userdata.target_object
         if isinstance(target_name, (list, tuple)):
             target_name = target_name[0] if target_name else "the object"
         rospy.set_param("/mllm_refine_target", str(target_name))
         
+        camera_eye = str(getattr(userdata, "camera_eye", "right"))
+        rospy.set_param("/mllm_refine_eye", camera_eye)
+        
         rospy.loginfo(
-            f"GraspRefinement: Calling refinement for '{target_name}' "
+            f"GraspRefinement: Calling [{camera_eye.upper()} EYE] refinement for '{target_name}' "
             f"at ({userdata.real_x:.3f}, {userdata.real_y:.3f})"
         )
         
@@ -203,8 +210,9 @@ class PlanRefinedGrasp(smach.State):
                 "real_x", "real_y", "table_z",
                 "planning_group",
                 "x_correction", "y_correction",
+                "close_hand",
             ],
-            output_keys=["refined_poses"],
+            output_keys=["refined_poses", "real_x", "real_y"],
         )
     
     def execute(self, userdata):
@@ -213,15 +221,10 @@ class PlanRefinedGrasp(smach.State):
         refined_y = userdata.real_y + userdata.y_correction
         table_z = userdata.table_z
         
-        # Clamp to robot workspace limits (same as ActionTrajectory)
-        MAX_REACH_X = 0.32
-        MIN_REACH_X = 0.10
-        MAX_REACH_Y = 0.25
-        
+        # Clamp to robot workspace limits
         orig_rx, orig_ry = refined_x, refined_y
-        refined_x = max(MIN_REACH_X, min(MAX_REACH_X, refined_x))
-        refined_y = max(-MAX_REACH_Y, min(MAX_REACH_Y, refined_y))
-        if orig_rx != refined_x or orig_ry != refined_y:
+        refined_x, refined_y, was_clamped = clamp_to_workspace(refined_x, refined_y)
+        if was_clamped:
             rospy.logwarn(
                 f"GraspRefinement: Clamped refined coords from "
                 f"({orig_rx:.3f}, {orig_ry:.3f}) to ({refined_x:.3f}, {refined_y:.3f})"
@@ -237,31 +240,28 @@ class PlanRefinedGrasp(smach.State):
         
         poses = []
         
-        # 1. Refined grasp pose (descend to object)
+        # 0. Align horizontally (keep safe height)
+        hover_pose = Pose()
+        hover_pose.position = Point(refined_x, refined_y, table_z + 0.06)
+        hover_pose.orientation = get_arm_orientation(is_right)
+        poses.append(hover_pose)
+        
+        # 1. Refined grasp pose (No downward plunge for crab claw, slide horizontally)
         grasp_pose = Pose()
-        grasp_pose.position = Point(
-            refined_x,
-            refined_y,
-            table_z + 0.02,  # Just above table
-        )
-        if is_right:
-            grasp_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-        else:
-            grasp_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+        grasp_pose.position = Point(refined_x, refined_y, table_z + 0.06)
+        grasp_pose.orientation = get_arm_orientation(is_right)
         poses.append(grasp_pose)
         
-        # 2. Lift pose (raise object after grasp)
+        # 2. Lift pose (raise object straight up after grasp)
         lift_pose = Pose()
-        lift_pose.position = Point(
-            refined_x,
-            refined_y,
-            table_z + 0.12,  # Lift up
-        )
-        if is_right:
-            lift_pose.orientation = Quaternion(-0.7071068, 0, 0, 0.7071068)
-        else:
-            lift_pose.orientation = Quaternion(0.7071068, 0, 0, 0.7071068)
+        lift_pose.position = Point(refined_x, refined_y, table_z + 0.12)
+        lift_pose.orientation = get_arm_orientation(is_right)
         poses.append(lift_pose)
         
         userdata.refined_poses = poses
+        
+        # Update real_x and real_y so subsequent refinement stages can stack offsets
+        userdata.real_x = refined_x
+        userdata.real_y = refined_y
+        
         return "succeeded"
