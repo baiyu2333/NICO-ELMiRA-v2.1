@@ -95,7 +95,8 @@ class GraspRefinement(smach.StateMachine):
                         userdata.planning_group: {
                             "names": position.joint_name,
                             "positions": position.position,
-                        }
+                        },
+                        "planning_group": userdata.planning_group,
                     }
                     # Step 0 = hover pose, Step 1 = refined grasp pose, Step 2 = lift
                     # Insert hand close after reaching grasp pose if close_hand is True
@@ -108,8 +109,10 @@ class GraspRefinement(smach.StateMachine):
                 # Only append return to init pose if this is the final grasping stage
                 if getattr(userdata, "close_hand", True):
                     userdata.joint_trajectory = trajectory + [userdata.motion_init_pose]
+                    userdata.hand_action = "close"
                 else:
                     userdata.joint_trajectory = trajectory
+                    userdata.hand_action = None
                     
                 return "succeeded"
             
@@ -140,7 +143,7 @@ class CallRefinementService(smach.State):
         smach.State.__init__(
             self,
             outcomes=["succeeded", "failed"],
-            input_keys=["real_x", "real_y", "target_object", "camera_eye"],
+            input_keys=["real_x", "real_y", "target_object", "camera_eye", "planning_group"],
             output_keys=["x_correction", "y_correction"],
         )
     
@@ -153,9 +156,13 @@ class CallRefinementService(smach.State):
         
         camera_eye = str(getattr(userdata, "camera_eye", "right"))
         rospy.set_param("/mllm_refine_eye", camera_eye)
+
+        planning_group = str(getattr(userdata, "planning_group", "r_arm"))
+        hand_side = "left" if planning_group.startswith("l") else "right"
+        rospy.set_param("/mllm_refine_hand", hand_side)
         
         rospy.loginfo(
-            f"GraspRefinement: Calling [{camera_eye.upper()} EYE] refinement for '{target_name}' "
+            f"GraspRefinement: Calling [{camera_eye.upper()} EYE] {hand_side}-hand refinement for '{target_name}' "
             f"at ({userdata.real_x:.3f}, {userdata.real_y:.3f})"
         )
         

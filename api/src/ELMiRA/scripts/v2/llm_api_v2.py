@@ -438,6 +438,9 @@ class MLLMGateway:
         try:
             # Determine which eye to use based on parameter
             camera_eye = rospy.get_param("/mllm_refine_eye", "right").lower()
+            hand_side = rospy.get_param("/mllm_refine_hand", "right").lower()
+            if hand_side not in ("left", "right"):
+                hand_side = "right"
             if camera_eye == "left":
                 image = self.left_eye_cache.get_frame()
                 eye_desc = "LEFT eye, which gives you a slightly angled, unblocked side-view"
@@ -447,8 +450,8 @@ class MLLMGateway:
                 
             prompt = (
                 f"You are controlling a robot arm. You are looking through the robot's {eye_desc}. "
-                f"The robot's right mechanical hand is currently reaching forward horizontally, attempting to clamp the '{target_object}'. "
-                f"Estimate how far the right hand (the mechanical gripper) needs to move "
+                f"The robot's {hand_side} mechanical hand is currently reaching forward horizontally, attempting to clamp the '{target_object}'. "
+                f"Estimate how far the {hand_side} hand (the mechanical gripper) needs to move "
                 f"to perfectly clamp the '{target_object}'. The hand does NOT need to move down, just horizontal alignment.\n\n"
                 f"Coordinate system:\n"
                 f"- x_offset_meters: positive = move hand FORWARD (push deeper into object), "

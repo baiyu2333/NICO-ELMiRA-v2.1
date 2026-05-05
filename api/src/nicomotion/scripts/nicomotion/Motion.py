@@ -124,6 +124,7 @@ class Motion:
         self._vrep = vrep
         self._vrepIO = None
         self._logger = logging.getLogger(__name__)
+        self._missing_hand_warned = set()
 
         pypot_error.BaseErrorHandler = MotionErrorHandler
 
@@ -544,6 +545,25 @@ class Motion:
             self._logger.warning("A real robot has no VREP controller")
             return None
 
+    def _getHandForName(self, handName):
+        if handName.lower().startswith("l"):
+            hand = getattr(self, "_leftHand", None)
+            side = "left"
+        elif handName.lower().startswith("r"):
+            hand = getattr(self, "_rightHand", None)
+            side = "right"
+        else:
+            self._logger.warning("Unknown hand name {}".format(handName))
+            return None
+
+        if hand is None:
+            if side not in self._missing_hand_warned:
+                self._missing_hand_warned.add(side)
+                self._logger.warning(
+                    "No {} hand object in current motor config".format(side)
+                )
+        return hand
+
     def setHandPose(self, handName, poseName, fractionMaxSpeed=1.0, percentage=1):
         """
         Executes pose with the specified hand. Most poses only works with the
@@ -569,12 +589,9 @@ class Motion:
         if self._vrep:
             self._logger.warning("'{}' pose is not supported for vrep".format(poseName))
         else:
-            if handName.lower().startswith("l"):
-                hand = self._leftHand
-            elif handName.lower().startswith("r"):
-                hand = self._rightHand
-            else:
-                self._logger.warning("Unknown hand name {}".format(handName))
+            hand = self._getHandForName(handName)
+            if hand is None:
+                return
 
             if hasattr(hand, poseName):
                 speed = min(fractionMaxSpeed, self._maximumSpeed)
@@ -597,12 +614,9 @@ class Motion:
         :param percentage: Percentage hand should open. 0.0 < percentage <= 1.0
         :type percentage: float
         """
-        if handName.lower().startswith("l"):
-            hand = self._leftHand
-        elif handName.lower().startswith("r"):
-            hand = self._rightHand
-        else:
-            self._logger.warning("Unknown hand name {}".format(handName))
+        hand = self._getHandForName(handName)
+        if hand is None:
+            return
 
         if self._vrep:
             hand.openHandVREP(min(fractionMaxSpeed, self._maximumSpeed), percentage)
@@ -620,12 +634,9 @@ class Motion:
         :param percentage: Percentage hand should open. 0.0 < percentage <= 1.0
         :type percentage: float
         """
-        if handName.lower().startswith("l"):
-            hand = self._leftHand
-        elif handName.lower().startswith("r"):
-            hand = self._rightHand
-        else:
-            self._logger.warning("Unknown hand name {}".format(handName))
+        hand = self._getHandForName(handName)
+        if hand is None:
+            return
 
         if self._vrep:
             hand.closeHandVREP(min(fractionMaxSpeed, self._maximumSpeed), percentage)
@@ -641,12 +652,9 @@ class Motion:
         :return: Raw IR sensor value
         :rtype: int
         """
-        if handName.lower().startswith("l"):
-            hand = self._leftHand
-        elif handName.lower().startswith("r"):
-            hand = self._rightHand
-        else:
-            self._logger.warning("Unknown hand name {}".format(handName))
+        hand = self._getHandForName(handName)
+        if hand is None:
+            return 0
 
         return hand.getPalmSensorReading()
 

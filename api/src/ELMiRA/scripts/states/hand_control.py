@@ -24,6 +24,8 @@ import rospy
 import smach
 import nicomsg.msg
 
+from utils.constants import palm_sensor_available
+
 
 # Palm sensor threshold to consider an object "grasped"
 # Typical reading: ~0 when empty, ~200-1000+ when grasping an object
@@ -122,13 +124,11 @@ class HandControl(smach.State):
     
     # Right hand positions (in degrees)
     RIGHT_HAND_OPEN = {
-        "r_indexfingers_x": 120,   # Index open
-        "r_virtualhand_x": 120,    # Virtual hand (thumb+middle) open
+        "r_indexfingers_x": 120,   # Current motor config only exposes this right-hand joint.
     }
     
     RIGHT_HAND_CLOSE = {
-        "r_indexfingers_x": -150,  # Index closed
-        "r_virtualhand_x": -150,   # Virtual hand closed
+        "r_indexfingers_x": -150,
     }
     
     # Left hand XL-320 motor IDs (Protocol 2.0)
@@ -146,11 +146,12 @@ class HandControl(smach.State):
     # 34: Thumb base, 35: Thumb joint, 36: Index, 37: Other fingers
     LEFT_FINGER_IDS = [34, 35, 36, 37]
     
-    # Left wrist motor IDs (also XL-320)
-    LEFT_WRIST_IDS = {
-        31: 0.0,    # 小臂腕 (forearm rotation) -> neutral
-        33: 0.0,    # 手腕 (wrist flex) -> neutral
-    }
+    # Left wrist motor IDs (also XL-320). The normal arm trajectory cannot
+    # command these through pypot, so keep them aligned here when the hand acts.
+    LEFT_WRIST_Z_ID = 31
+    LEFT_WRIST_X_ID = 33
+    LEFT_WRIST_Z_DEG = 80.0   # Match ELMiRA's +1.39 rad palm-facing pose.
+    LEFT_WRIST_X_DEG = 0.0
     
     # Positions for XL-320 left hand
     LEFT_HAND_OPEN_POS = -150.0    # All fingers fully open
@@ -173,6 +174,21 @@ class HandControl(smach.State):
         self._pub_xl320 = rospy.Publisher(
             "/nico/motion/xl320_cmd", nicomsg.msg.sff, queue_size=10
         )
+
+        self._left_wrist_positions = {
+            self.LEFT_WRIST_Z_ID: float(
+                rospy.get_param(
+                    "~left_wrist_z_deg",
+                    rospy.get_param("/elmira/left_wrist_z_deg", self.LEFT_WRIST_Z_DEG),
+                )
+            ),
+            self.LEFT_WRIST_X_ID: float(
+                rospy.get_param(
+                    "~left_wrist_x_deg",
+                    rospy.get_param("/elmira/left_wrist_x_deg", self.LEFT_WRIST_X_DEG),
+                )
+            ),
+        }
         
         # Palm sensor monitor
         self._palm = get_palm_monitor()
@@ -221,7 +237,7 @@ class HandControl(smach.State):
             rospy.loginfo(f"HandControl: XL-320 left hand {action} via ROS topic...")
             
             # ALL left hand XL-320 motor IDs (wrist + fingers)
-            all_motor_ids = list(self.LEFT_WRIST_IDS.keys()) + self.LEFT_FINGER_IDS
+            all_motor_ids = list(self._left_wrist_positions.keys()) + self.LEFT_FINGER_IDS
             
             # Step 1: Enable torque on ALL motors (register 24 = 1)
             for motor_id in all_motor_ids:
@@ -235,12 +251,14 @@ class HandControl(smach.State):
                 rospy.sleep(0.005)
             
             # Step 3: Set wrist positions (register 30 = goal position)
-            for wrist_id, wrist_deg in self.LEFT_WRIST_IDS.items():
+            for wrist_id, wrist_deg in self._left_wrist_positions.items():
                 raw_wrist = int((wrist_deg + 150.0) / 300.0 * 1023.0)
                 raw_wrist = max(0, min(1023, raw_wrist))
                 self._send_xl320_cmd(wrist_id, 30, raw_wrist)
                 rospy.sleep(0.005)
-            rospy.loginfo("HandControl: Left wrist set to neutral")
+            rospy.loginfo(
+                f"HandControl: Left wrist aligned for grasp {self._left_wrist_positions}"
+            )
             
             # Step 4: Set finger positions
             for motor_id in self.LEFT_FINGER_IDS:
@@ -291,6 +309,12 @@ class HandControl(smach.State):
         rospy.sleep(HAND_MOVE_DURATION)
         
         if verify_grasp:
+            if not palm_sensor_available(side):
+                rospy.loginfo(
+                    f"HandControl: {side} hand command completed; palm sensor verification unavailable"
+                )
+                return True
+
             # Check palm sensor for grasp confirmation
             grasped = self._palm.wait_for_grasp(side)
             if grasped:

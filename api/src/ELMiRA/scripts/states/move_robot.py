@@ -6,6 +6,9 @@ from smach_ros import ServiceState, MonitorState
 from open_manipulator_msgs.srv import SetJointPosition
 from open_manipulator_msgs.msg import JointPosition
 from sensor_msgs.msg import JointState
+import rospy
+
+from utils.constants import filter_commandable_joints
 
 
 class JointTrajectoryIterator(smach.Iterator):
@@ -54,20 +57,41 @@ class JointTrajectoryIterator(smach.Iterator):
                 def trajectory_step_cb(userdata):
                     joint_states = userdata.joint_trajectory[userdata.trajectory_step]
                     if "head" in joint_states:
-                        userdata.names_head = joint_states["head"]["names"]
-                        userdata.positions_head = joint_states["head"]["positions"]
+                        names, positions, dropped = filter_commandable_joints(
+                            "head",
+                            joint_states["head"]["names"],
+                            joint_states["head"]["positions"],
+                        )
+                        userdata.names_head = names
+                        userdata.positions_head = positions
+                        if dropped:
+                            rospy.logwarn(f"MoveRobot: Dropping non-commandable head joints: {dropped}")
                     else:
                         userdata.names_head = []
                         userdata.positions_head = []
                     if "l_arm" in joint_states:
-                        userdata.names_left = joint_states["l_arm"]["names"]
-                        userdata.positions_left = joint_states["l_arm"]["positions"]
+                        names, positions, dropped = filter_commandable_joints(
+                            "l_arm",
+                            joint_states["l_arm"]["names"],
+                            joint_states["l_arm"]["positions"],
+                        )
+                        userdata.names_left = names
+                        userdata.positions_left = positions
+                        if dropped:
+                            rospy.logwarn(f"MoveRobot: Dropping non-commandable left arm joints: {dropped}")
                     else:
                         userdata.names_left = []
                         userdata.positions_left = []
                     if "r_arm" in joint_states:
-                        userdata.names_right = joint_states["r_arm"]["names"]
-                        userdata.positions_right = joint_states["r_arm"]["positions"]
+                        names, positions, dropped = filter_commandable_joints(
+                            "r_arm",
+                            joint_states["r_arm"]["names"],
+                            joint_states["r_arm"]["positions"],
+                        )
+                        userdata.names_right = names
+                        userdata.positions_right = positions
+                        if dropped:
+                            rospy.logwarn(f"MoveRobot: Dropping non-commandable right arm joints: {dropped}")
                     else:
                         userdata.names_right = []
                         userdata.positions_right = []
@@ -217,15 +241,26 @@ class MoveRobotPart(smach.Sequence):
             # TODO precision input parameter?
             @smach.cb_interface(input_keys=["names", "positions"])
             def target_joint_state_reached_cb(userdata, message):
+                if not userdata.names:
+                    return False
+
+                missing = [name for name in userdata.names if name not in message.name]
+                if missing:
+                    rospy.logwarn(f"MoveRobotPart: Missing joints in feedback: {missing}")
+                    return False
+
                 joint_ids = np.argsort(message.name)
-                ordered_state = np.array(message.position)[
-                    joint_ids[
-                        np.searchsorted(message.name, userdata.names, sorter=joint_ids)
-                    ]
+                selected_ids = joint_ids[
+                    np.searchsorted(message.name, userdata.names, sorter=joint_ids)
                 ]
+                ordered_state = np.array(message.position)[selected_ids]
+                if len(message.velocity) == len(message.name):
+                    ordered_velocity = np.array(message.velocity)[selected_ids]
+                else:
+                    ordered_velocity = np.zeros(len(userdata.names))
                 return not (
                     np.allclose(userdata.positions, ordered_state, atol=0.052)  # < ~3°
-                    and np.all(np.array(message.velocity) == 0)
+                    and np.all(np.abs(ordered_velocity) < 0.01)
                 )
 
             smach.Sequence.add(

@@ -103,7 +103,7 @@ Speak: In order to verbally respond to the user, you should add a 'speak' action
 
 Describe: Whenever you need visual information to respond to a user query about your surroundings or objects on the table, you need to actively request it by adding a 'describe' action to the list of actions. This lets you look at the table and take an image with the right eye camera which you will receive as input.
 
-Act: When instructed by the user to interact with objects on the table, you have to add the 'act' action, triggering your object detection and IK solver to produce physical actions with the left or right arm. You need to add a key for the 'type' of action and the target 'object' specified by the user for your systems to know which action to choose. Valid types are: 'touch' to touch the object with your hand, 'push' to move the object forward, 'push_left' to move it to the left, 'push_right' to move it to the right, 'show' to point towards it, 'grasp' to pick it up, and 'place' to put it down.
+Act: When instructed by the user to interact with objects on the table, you have to add the 'act' action, triggering your object detection and IK solver to produce physical actions with the left or right arm. You need to add a key for the 'type' of action and the target 'object' specified by the user for your systems to know which action to choose. Valid types are: 'touch' to touch the object with your hand, 'push' to move the object forward, 'push_left' to move it to the left, 'push_right' to move it to the right, 'show' to point towards it, 'grasp' to pick it up, and 'place' to put it down. If the user explicitly specifies a hand or arm, add "hand": "left" or "hand": "right" to the act action.
 
 Quit: To end the interaction entirely, you should output the 'quit' signal with no additional parameters.
 
@@ -113,7 +113,8 @@ Please always output your response as a valid JSON object containing the list of
 {"actions": [{"action": "speak", "text": "Sure, I can do that for you."}, {"action": "act", "object": "banana", "type": "touch"}]}
 {"actions": [{"action": "describe"}]}
 {"actions": [{"action": "speak", "text": "Goodbye! I hope we see each other again."}, {"action": "quit"}]}
-{"actions": [{"action": "speak", "text": "I'll pick up the red ball for you."}, {"action": "act", "object": "red ball", "type": "grasp"}]}"""
+{"actions": [{"action": "speak", "text": "I'll pick up the red ball for you."}, {"action": "act", "object": "red ball", "type": "grasp"}]}
+{"actions": [{"action": "speak", "text": "I will use my left hand."}, {"action": "act", "object": "red object", "type": "grasp", "hand": "left"}]}"""
 
     def _encode_image(self, image: np.ndarray) -> str:
         """

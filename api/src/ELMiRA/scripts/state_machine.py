@@ -12,7 +12,7 @@ from nicomsg.srv import SayText
 from nicomsg.msg import empty
 from std_msgs.msg import String
 
-from utils.constants import LLM_CHAT_SERVICE, LLM_VISION_SERVICE
+from utils.constants import LLM_CHAT_SERVICE, LLM_VISION_SERVICE, palm_sensor_available
 from utils.response_parser import parse_llm_actions
 
 # Global publisher for dashboard conversation
@@ -48,6 +48,7 @@ def main():
     # set initial userdata
     sm.userdata.system_message = ""
     sm.userdata.llm_input = ""
+    sm.userdata.requested_hand = None
     # speech recognition
     sm.userdata.asr_detect_start = rospy.get_param("~detect_start", True)
     sm.userdata.asr_detect_stop = rospy.get_param("~detect_stop", True)
@@ -67,7 +68,7 @@ def main():
                 "l_wrist_z",
                 "l_wrist_x",
             ],
-            "positions": [0.157, 0.0, 1.57, 1.57, 1.39, 0.0],
+            "positions": [0.157, 0.0, 0.8203, 1.57, 1.39, 0.0],
         },
         "r_arm": {
             "names": [
@@ -78,7 +79,7 @@ def main():
                 "r_wrist_z",
                 "r_wrist_x",
             ],
-            "positions": [-0.157, 0.0, -1.57, -1.57, -1.39, 0.0],
+            "positions": [-0.157, 0.0, -0.8203, -1.57, -1.39, 0.0],
         },
         "head": {
             "names": [
@@ -229,9 +230,20 @@ def main():
                 "tts_speed",
                 "tts_blocking",
                 "system_message",
+                "requested_hand",
             ],
             it=lambda: range(0, len(sm.userdata.llm_actions)),
-            output_keys=["llm_actions", "system_message", "hand_action", "planning_group", "action_type", "real_x", "real_y", "target_object"],
+            output_keys=[
+                "llm_actions",
+                "system_message",
+                "hand_action",
+                "planning_group",
+                "action_type",
+                "real_x",
+                "real_y",
+                "target_object",
+                "requested_hand",
+            ],
             it_label="action_index",
             exhausted_outcome="succeeded",
         )
@@ -259,8 +271,19 @@ def main():
                     "tts_speed",
                     "tts_blocking",
                     "system_message",
+                    "requested_hand",
                 ],
-                output_keys=["llm_actions", "system_message", "hand_action", "planning_group", "action_type", "real_x", "real_y", "target_object"],
+                output_keys=[
+                    "llm_actions",
+                    "system_message",
+                    "hand_action",
+                    "planning_group",
+                    "action_type",
+                    "real_x",
+                    "real_y",
+                    "target_object",
+                    "requested_hand",
+                ],
             )
             with execute_actions_sm:
 
@@ -513,11 +536,12 @@ def main():
                     from states.hand_control import PalmSensorMonitor
                     palm = PalmSensorMonitor()
                     rospy.sleep(0.5)  # Let sensor settle
-                    
+
                     planning_group = userdata.planning_group or "r_arm"
                     side = "left" if "l_" in planning_group else "right"
-                    grasped = palm.is_grasping(side)
-                    reading = palm.get_reading(side)
+                    sensor_available = palm_sensor_available(side)
+                    grasped = palm.is_grasping(side) if sensor_available else None
+                    reading = palm.get_reading(side) if sensor_available else 0
                     
                     target = userdata.target_object
                     if isinstance(target, (list, tuple)):
@@ -527,12 +551,21 @@ def main():
                     # with a truthful response based on sensor feedback
                     current_idx = userdata.action_index
                     kept_actions = userdata.llm_actions[:current_idx + 1]
-                    
-                    if grasped:
+
+                    if grasped is True:
                         rospy.loginfo(f"VERIFY_GRASP: Success! Palm sensor={reading}, side={side}")
                         kept_actions.append({
                             "action": "speak",
                             "text": f"I've successfully grasped {target}."
+                        })
+                    elif grasped is None:
+                        rospy.loginfo(
+                            f"VERIFY_GRASP: Palm sensor unavailable for {side} hand; command was executed"
+                        )
+                        kept_actions.append({
+                            "action": "speak",
+                            "text": f"I closed my {side} hand on {target}. "
+                                    f"Please check whether I have it."
                         })
                     else:
                         rospy.logwarn(f"VERIFY_GRASP: Failed! Palm sensor={reading}, side={side}")

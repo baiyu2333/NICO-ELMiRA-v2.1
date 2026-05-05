@@ -24,6 +24,8 @@
     <arg name="image_topic" default="/nico/vision/right" doc="Camera topic"/>
     <arg name="json_path" default="$(find elmira)/json/nico_humanoid_upper_fixed_usb0.json" doc="Motor config JSON"/>
     <arg name="dummy" default="false" doc="Run in dummy/simulation mode"/>
+    <arg name="left_wrist_z_deg" default="80.0" doc="Left XL-320 forearm rotation for palm-facing grasp"/>
+    <arg name="left_wrist_x_deg" default="0.0" doc="Left XL-320 wrist flex for palm-facing grasp"/>
     
     <!-- Speech ASR parameters - adjust based on your microphone/environment -->
     <arg name="energy_silence" default="300" doc="Energy level for silence (increase for noisy environments)"/>
@@ -98,6 +100,8 @@
     <!-- Set global params for state machine -->
     <arg name="offset_z" default="0.0" doc="Calibration offset for Z axis (meters)"/>
     <param name="/elmira/offset_z" value="$(arg offset_z)"/>
+    <param name="/elmira/left_wrist_z_deg" value="$(arg left_wrist_z_deg)"/>
+    <param name="/elmira/left_wrist_x_deg" value="$(arg left_wrist_x_deg)"/>
     
     <param name="/use_mllm" value="true"/>
     <param name="/use_mllm_grounding" value="$(arg use_mllm_grounding)"/>

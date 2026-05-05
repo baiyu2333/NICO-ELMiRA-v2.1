@@ -59,7 +59,7 @@ Speak: In order to verbally respond to the user, you should add a 'speak' action
 
 Describe: ONLY use this when the user asks "what do you see?" or "describe the scene". Do NOT use this if the user asks you to point, touch, or grab something.
 
-Act: When the user asks you to point at, touch, grasp, or move an object, use this action DIRECTLY. You do NOT need to 'describe' first; the 'act' command will automatically trigger the camera and detection system to find the object. Valid types: 'touch', 'push', 'push_left', 'push_right', 'show' (for pointing), 'grasp', 'place'.
+Act: When the user asks you to point at, touch, grasp, or move an object, use this action DIRECTLY. You do NOT need to 'describe' first; the 'act' command will automatically trigger the camera and detection system to find the object. Valid types: 'touch', 'push', 'push_left', 'push_right', 'show' (for pointing), 'grasp', 'place'. If the user explicitly specifies a hand or arm, add "hand": "left" or "hand": "right" to the act action.
 
 Quit: To end the interaction entirely, you should output the 'quit' signal with no additional parameters.
 
@@ -69,7 +69,8 @@ Please always output your response as a valid JSON object containing the list of
 {"actions": [{"action": "speak", "text": "Sure, I can do that for you."}, {"action": "act", "object": "banana", "type": "touch"}]}
 {"actions": [{"action": "describe"}]}
 {"actions": [{"action": "speak", "text": "Goodbye! I hope we see each other again."}, {"action": "quit"}]}
-{"actions": [{"action": "speak", "text": "I'll pick up the red ball for you."}, {"action": "act", "object": "red ball", "type": "grasp"}]}"""
+{"actions": [{"action": "speak", "text": "I'll pick up the red ball for you."}, {"action": "act", "object": "red ball", "type": "grasp"}]}
+{"actions": [{"action": "speak", "text": "I will use my left hand."}, {"action": "act", "object": "red object", "type": "grasp", "hand": "left"}]}"""
 
     def _build_messages(
         self,

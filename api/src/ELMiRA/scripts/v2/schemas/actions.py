@@ -54,12 +54,14 @@ class ActAction:
     action: Literal["act"] = "act"
     target_object: str = ""
     interaction: str = ""  # One of VALID_INTERACTION_TYPES
+    hand: Optional[Literal["left", "right"]] = None
     
     def to_dict(self) -> dict:
         return {
             "action": self.action,
             "target_object": self.target_object,
-            "interaction": self.interaction
+            "interaction": self.interaction,
+            "hand": self.hand,
         }
     
     @property
@@ -128,7 +130,8 @@ class ActionResponse:
                 elif action_type == "act":
                     actions.append(ActAction(
                         target_object=action_data.get("target_object", action_data.get("object", "")),
-                        interaction=action_data.get("interaction", action_data.get("type", ""))
+                        interaction=action_data.get("interaction", action_data.get("type", "")),
+                        hand=action_data.get("hand", action_data.get("side", action_data.get("arm"))),
                     ))
                 elif action_type == "describe":
                     actions.append(DescribeAction(

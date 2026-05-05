@@ -53,7 +53,10 @@ class NicoRosMotion:
             "usePyrep": False,
             "pyrep": False,
             "headless": False,
-            "disabledMotorIds": [24, 26, 28, 30, 32],
+            # Exclude known broken/mixed-protocol hand motors from pypot startup.
+            # Left hand XL-320 motors are handled through /xl320_cmd; right finger
+            # ID 29 is currently overloaded/broken and should not block startup.
+            "disabledMotorIds": [24, 26, 28, 29, 30, 32],
         }
 
     def __init__(self, config=None):
@@ -202,6 +205,7 @@ class NicoRosMotion:
             self._ROSPY_xl320_cmd,
         )
         self._xl320_lock = threading.Lock()
+        self._palm_sensor_warned = set()
 
         # setup services
         self.logger.debug("Init services")
@@ -760,7 +764,7 @@ class NicoRosMotion:
     def _joint_state_publisher(self):
         r = rospy.Rate(50)  # 50hz
         pubs = self._publisher_head, self._publisher_left, self._publisher_right
-        chains = (
+        configured_chains = (
             ["head_z", "head_y"],
             [
                 "l_shoulder_z",
@@ -783,6 +787,19 @@ class NicoRosMotion:
                 "r_thumb_x",
             ],
         )
+        available_joints = set(self.robot.getJointNames())
+        chains = tuple(
+            [joint for joint in chain if joint in available_joints]
+            for chain in configured_chains
+        )
+        for chain_name, configured, active in zip(
+            ("head", "left arm", "right arm"), configured_chains, chains
+        ):
+            missing = [joint for joint in configured if joint not in available_joints]
+            if missing:
+                self.logger.warning(
+                    f"Joint state publisher: {chain_name} joints not in active motor config: {missing}"
+                )
         while not rospy.is_shutdown():
             for i, pub in enumerate(pubs):
                 message = sensor_msgs.msg.JointState()
@@ -858,11 +875,23 @@ class NicoRosMotion:
     def _palm_sensor_publisher(self):
         r = rospy.Rate(10)  # 10hz
         while not rospy.is_shutdown():
-            left = self.robot.getPalmSensorReading("l")
-            right = self.robot.getPalmSensorReading("r")
+            left = self._safe_palm_sensor_reading("l")
+            right = self._safe_palm_sensor_reading("r")
             self._palm_publisher_left.publish(left)
             self._palm_publisher_right.publish(right)
             r.sleep()
+
+    def _safe_palm_sensor_reading(self, hand):
+        try:
+            return self.robot.getPalmSensorReading(hand)
+        except Exception as exc:
+            if hand not in self._palm_sensor_warned:
+                self._palm_sensor_warned.add(hand)
+                side = "left" if hand.lower().startswith("l") else "right"
+                self.logger.warning(
+                    f"Palm sensor for {side} hand is unavailable in current motor config; publishing 0 ({exc})"
+                )
+            return 0
 
 
 if __name__ == "__main__":

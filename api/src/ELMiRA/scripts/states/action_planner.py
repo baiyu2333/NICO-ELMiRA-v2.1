@@ -96,10 +96,9 @@ class ActionTrajectory(smach.State):
     """Generates target poses for robot actions.
     
     Arm selection:
-    - Actions requiring hand control (grasp, place, etc.) ALWAYS use right arm
-      because left hand is physically broken.
-    - Non-hand actions (touch, push, show) select arm by target Y coordinate:
-      target_y < 0 → right arm, target_y >= 0 → left arm.
+    - Explicit user hand choice is honored when present.
+    - Otherwise, select arm by target Y coordinate:
+      target_y < 0 -> right arm, target_y >= 0 -> left arm.
     
     Supported action types:
     - touch: Touch object with hand
@@ -115,7 +114,7 @@ class ActionTrajectory(smach.State):
         smach.State.__init__(
             self,
             outcomes=["succeeded", "unknown_action", "hand_action"],
-            input_keys=["action_type", "target_x", "target_y", "target_z"],
+            input_keys=["action_type", "target_x", "target_y", "target_z", "requested_hand"],
             output_keys=[
                 "planning_group",
                 "poses",
@@ -125,18 +124,32 @@ class ActionTrajectory(smach.State):
 
     def execute(self, userdata):
         action_lower = str(userdata.action_type).lower()
+        requested_hand = getattr(userdata, "requested_hand", None)
         
-        # Force right arm for any action that needs a working hand,
-        # because the left hand is physically broken.
-        if not LEFT_HAND_FUNCTIONAL and action_lower in HAND_REQUIRED_ACTIONS:
+        if requested_hand in ("left", "right"):
+            if (
+                requested_hand == "left"
+                and action_lower in HAND_REQUIRED_ACTIONS
+                and not LEFT_HAND_FUNCTIONAL
+            ):
+                is_right = True
+                rospy.logwarn(
+                    "ActionTrajectory: User requested LEFT hand, but left hand is disabled; "
+                    "falling back to RIGHT arm"
+                )
+            else:
+                is_right = requested_hand == "right"
+                rospy.loginfo(
+                    f"ActionTrajectory: Honoring explicit {requested_hand} hand request"
+                )
+        elif not LEFT_HAND_FUNCTIONAL and action_lower in HAND_REQUIRED_ACTIONS:
             is_right = True
             if userdata.target_y >= 0:
                 rospy.logwarn(
                     f"ActionTrajectory: Object is on LEFT side (y={userdata.target_y:.3f}) "
-                    f"but forcing RIGHT arm because left hand is broken"
+                    f"but forcing RIGHT arm because left hand is disabled"
                 )
         else:
-            # Non-hand actions: select arm by target Y coordinate
             is_right = userdata.target_y < 0
         
         userdata.planning_group = "r_arm" if is_right else "l_arm"
@@ -272,7 +285,13 @@ class ActionPlanner(smach.StateMachine):
 
     def __init__(self):
         super(ActionPlanner, self).__init__(
-            input_keys=["action_type", "target_object", "table_z", "motion_init_pose"],
+            input_keys=[
+                "action_type",
+                "target_object",
+                "table_z",
+                "motion_init_pose",
+                "requested_hand",
+            ],
             output_keys=["joint_trajectory", "system_message", "real_x", "real_y", "hand_action", "planning_group"],
             outcomes=["succeeded", "preempted", "aborted", "system_out"],
         )
@@ -404,7 +423,14 @@ class ConcurrentPlanAndVerify(smach.Concurrence):
 
     def __init__(self):
         super(ConcurrentPlanAndVerify, self).__init__(
-            input_keys=["action_type", "target_object", "llm_input", "table_z", "motion_init_pose"],
+            input_keys=[
+                "action_type",
+                "target_object",
+                "llm_input",
+                "table_z",
+                "motion_init_pose",
+                "requested_hand",
+            ],
             output_keys=["joint_trajectory", "system_message", "real_x", "real_y", "hand_action", "planning_group"],
             outcomes=["succeeded", "preempted", "aborted", "system_out"],
             default_outcome="system_out",

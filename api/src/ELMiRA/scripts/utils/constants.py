@@ -6,9 +6,8 @@ arm orientations, and hardware configuration.
 from geometry_msgs.msg import Quaternion
 
 # ─── Robot Hardware Status ────────────────────────────────────────────
-# Left hand (wrist/fingers) is PHYSICALLY BROKEN.
-# Left arm (shoulder/elbow) can still move but MUST NOT be used for
-# grasp/place actions that require hand control.
+# The new left hand is controlled outside the main pypot motor config because
+# it uses XL-320/SEED protocol. Keep only Protocol 1.0 joints in arm movement.
 LEFT_HAND_FUNCTIONAL = True  # New XL-320 4-finger hand installed
 
 # Actions that require a working hand (grasp/close/open)
@@ -17,6 +16,52 @@ HAND_REQUIRED_ACTIONS = frozenset([
     "place", "drop", "release",
     "open_hand", "close_hand",
 ])
+
+# The active motor config does not expose old hand sensor objects. The new left
+# XL-320 hand is command-only here, so a 0 reading should not be treated as a
+# failed grasp.
+PALM_SENSOR_AVAILABLE = {
+    "left": False,
+    "right": False,
+}
+
+
+def palm_sensor_available(side: str) -> bool:
+    return PALM_SENSOR_AVAILABLE.get(str(side).lower(), False)
+
+# Joints that can be commanded through /nico/motion/setAngle with the current
+# nico_humanoid_upper_fixed_usb0.json motor file. Left wrist/finger XL-320
+# joints are commanded separately via /nico/motion/xl320_cmd.
+COMMANDABLE_JOINTS = {
+    "head": frozenset(["head_z", "head_y"]),
+    "l_arm": frozenset(["l_shoulder_z", "l_shoulder_y", "l_arm_x", "l_elbow_y"]),
+    "r_arm": frozenset([
+        "r_shoulder_z",
+        "r_shoulder_y",
+        "r_arm_x",
+        "r_elbow_y",
+        "r_wrist_z",
+        "r_wrist_x",
+    ]),
+}
+
+
+def filter_commandable_joints(group: str, names, positions):
+    """Drop joints that are not present in the active pypot motor config."""
+    allowed = COMMANDABLE_JOINTS.get(group)
+    if allowed is None:
+        return list(names), list(positions), []
+
+    filtered_names = []
+    filtered_positions = []
+    dropped = []
+    for name, position in zip(names, positions):
+        if name in allowed:
+            filtered_names.append(name)
+            filtered_positions.append(position)
+        else:
+            dropped.append(name)
+    return filtered_names, filtered_positions, dropped
 
 # ─── Workspace Limits (meters) ───────────────────────────────────────
 # Based on NICO arm URDF and IK reachability testing (EvoIK solver).
