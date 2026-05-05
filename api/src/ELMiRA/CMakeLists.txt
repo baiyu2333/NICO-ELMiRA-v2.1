@@ -71,6 +71,7 @@ add_service_files(
     PromptMLLM.srv
     PromptMLLMWithGrounding.srv
     DetectWithMLLM.srv
+    NJFPredictAction.srv
  )
 
 ## Generate actions in the 'action' folder

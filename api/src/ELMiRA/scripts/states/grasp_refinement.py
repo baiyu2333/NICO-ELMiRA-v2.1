@@ -6,24 +6,29 @@ After the robot's hand reaches the initial approach pose (hovering above
 the detected object position), this state:
 
 1. Takes a second camera image (with the hand visible near the object)
-2. Calls the mllm_refine_grasp service to get a correction offset
+2. Calls the selected refinement backend to get a correction offset
 3. Applies the correction to the original coordinates
 4. Plans the final descent (grasp pose + lift) with corrected coordinates
 5. Outputs the corrected trajectory for execution
 
-This implements a simple 1-pass visual servoing loop that dramatically
-improves grasp accuracy by using closed-loop visual feedback.
+Supported refinement modes:
+- mllm: existing MLLM-estimated metric correction
+- njf: NJF-inspired local visual Jacobian controller
+- hybrid: MLLM coarse correction plus bounded NJF-inspired micro-correction
 """
 
 import json
+import math
 import rospy
 import smach
 import smach_ros
 
 from geometry_msgs.msg import Pose, Point
+from sensor_msgs.msg import JointState
 from elmira.srv import (
     PromptVisionLLM,
     InverseKinematics,
+    NJFPredictAction,
 )
 from utils.constants import clamp_to_workspace, get_arm_orientation
 
@@ -137,7 +142,7 @@ class GraspRefinement(smach.StateMachine):
 
 
 class CallRefinementService(smach.State):
-    """Call the mllm_refine_grasp service and parse the correction offsets."""
+    """Call the configured grasp refinement backend and parse correction offsets."""
     
     def __init__(self):
         smach.State.__init__(
@@ -148,57 +153,169 @@ class CallRefinementService(smach.State):
         )
     
     def execute(self, userdata):
-        # Set parameters for the MLLM gateway
         target_name = userdata.target_object
         if isinstance(target_name, (list, tuple)):
             target_name = target_name[0] if target_name else "the object"
-        rospy.set_param("/mllm_refine_target", str(target_name))
-        
         camera_eye = str(getattr(userdata, "camera_eye", "right"))
-        rospy.set_param("/mllm_refine_eye", camera_eye)
-
         planning_group = str(getattr(userdata, "planning_group", "r_arm"))
         hand_side = "left" if planning_group.startswith("l") else "right"
+
+        rospy.set_param("/elmira/current_refine_x", float(userdata.real_x))
+        rospy.set_param("/elmira/current_refine_y", float(userdata.real_y))
+        rospy.set_param("/mllm_refine_target", str(target_name))
+        rospy.set_param("/mllm_refine_eye", camera_eye)
         rospy.set_param("/mllm_refine_hand", hand_side)
-        
+
+        mode = self._refinement_mode()
         rospy.loginfo(
-            f"GraspRefinement: Calling [{camera_eye.upper()} EYE] {hand_side}-hand refinement for '{target_name}' "
-            f"at ({userdata.real_x:.3f}, {userdata.real_y:.3f})"
+            f"GraspRefinement: mode={mode}, [{camera_eye.upper()} EYE] "
+            f"{hand_side}-hand refinement for '{target_name}' at "
+            f"({userdata.real_x:.3f}, {userdata.real_y:.3f})"
         )
-        
+
+        if mode == "mllm":
+            x_off, y_off, ok = self._call_mllm_refinement()
+        elif mode == "njf":
+            x_off, y_off, ok = self._call_njf_refinement(userdata)
+        elif mode == "hybrid":
+            coarse_x, coarse_y, coarse_ok = self._call_mllm_refinement()
+            micro_error_scale = float(
+                rospy.get_param("/elmira/hybrid_njf_error_scale", 0.25)
+            )
+            micro_x, micro_y, micro_ok = self._call_njf_refinement(
+                userdata,
+                x_error_m=coarse_x * micro_error_scale,
+                y_error_m=coarse_y * micro_error_scale,
+            )
+            x_off = coarse_x + micro_x
+            y_off = coarse_y + micro_y
+            ok = coarse_ok or micro_ok
+            rospy.loginfo(
+                "GraspRefinement: hybrid correction coarse=(%.4f, %.4f), "
+                "micro=(%.4f, %.4f)",
+                coarse_x,
+                coarse_y,
+                micro_x,
+                micro_y,
+            )
+        else:
+            rospy.logwarn(
+                "GraspRefinement: Unknown refinement_mode '%s'; using mllm", mode
+            )
+            x_off, y_off, ok = self._call_mllm_refinement()
+
+        userdata.x_correction, userdata.y_correction = self._clamp_total_correction(
+            x_off, y_off
+        )
+        return "succeeded" if ok else "failed"
+
+    def _refinement_mode(self):
+        mode = rospy.get_param(
+            "~refinement_mode",
+            rospy.get_param("/elmira/refinement_mode", "mllm"),
+        )
+        return str(mode).strip().lower()
+
+    @staticmethod
+    def _finite(value, default=0.0):
         try:
-            # Wait for refinement service
+            value = float(value)
+        except (TypeError, ValueError):
+            return default
+        return value if math.isfinite(value) else default
+
+    def _clamp_total_correction(self, x_off, y_off):
+        max_total = abs(
+            float(rospy.get_param("/elmira/max_refinement_correction_m", 0.05))
+        )
+        x_off = max(-max_total, min(max_total, self._finite(x_off)))
+        y_off = max(-max_total, min(max_total, self._finite(y_off)))
+        return x_off, y_off
+
+    def _call_mllm_refinement(self):
+        try:
             rospy.wait_for_service("mllm_refine_grasp", timeout=5.0)
-            
             refine_srv = rospy.ServiceProxy("mllm_refine_grasp", PromptVisionLLM)
             response = refine_srv()
-            
-            # Parse response
             data = json.loads(response.response)
-            x_off = float(data.get("x_offset_meters", 0.0))
-            y_off = float(data.get("y_offset_meters", 0.0))
-            confidence = float(data.get("confidence", 0.0))
+            x_off = self._finite(data.get("x_offset_meters", 0.0))
+            y_off = self._finite(data.get("y_offset_meters", 0.0))
+            confidence = self._finite(data.get("confidence", 0.0))
             description = data.get("description", "")
-            
+
             rospy.loginfo(
-                f"GraspRefinement: Correction x={x_off:.4f}m, y={y_off:.4f}m "
-                f"(confidence={confidence:.2f}): {description}"
+                f"GraspRefinement: MLLM correction x={x_off:.4f}m, "
+                f"y={y_off:.4f}m (confidence={confidence:.2f}): {description}"
             )
-            
-            userdata.x_correction = x_off
-            userdata.y_correction = y_off
-            return "succeeded"
-            
+            return x_off, y_off, True
         except rospy.ROSException as e:
-            rospy.logwarn(f"GraspRefinement: Service timeout: {e}")
-            userdata.x_correction = 0.0
-            userdata.y_correction = 0.0
-            return "failed"
+            rospy.logwarn(f"GraspRefinement: MLLM service timeout: {e}")
         except Exception as e:
-            rospy.logwarn(f"GraspRefinement: Error: {e}")
-            userdata.x_correction = 0.0
-            userdata.y_correction = 0.0
-            return "failed"
+            rospy.logwarn(f"GraspRefinement: MLLM refinement error: {e}")
+        return 0.0, 0.0, False
+
+    def _latest_joint_state(self, planning_group):
+        topic = (
+            "/left/open_manipulator_p/joint_states"
+            if str(planning_group).startswith("l")
+            else "/right/open_manipulator_p/joint_states"
+        )
+        try:
+            msg = rospy.wait_for_message(topic, JointState, timeout=0.25)
+            return list(msg.name), [float(v) for v in msg.position]
+        except Exception:
+            return [], []
+
+    def _call_njf_refinement(self, userdata, x_error_m=None, y_error_m=None):
+        planning_group = str(getattr(userdata, "planning_group", "r_arm"))
+        if x_error_m is None:
+            x_error_m = rospy.get_param("/elmira/njf_x_error_m", 0.0)
+        if y_error_m is None:
+            y_error_m = rospy.get_param("/elmira/njf_y_error_m", 0.0)
+        image_error_u = rospy.get_param("/elmira/njf_image_error_u", 0.0)
+        image_error_v = rospy.get_param("/elmira/njf_image_error_v", 0.0)
+        joint_names, joint_positions = self._latest_joint_state(planning_group)
+
+        try:
+            timeout = float(rospy.get_param("/elmira/njf_service_timeout", 2.0))
+            rospy.wait_for_service("njf_predict_action", timeout=timeout)
+            njf_srv = rospy.ServiceProxy("njf_predict_action", NJFPredictAction)
+            response = njf_srv(
+                planning_group=planning_group,
+                x_error_m=float(x_error_m),
+                y_error_m=float(y_error_m),
+                image_error_u=float(image_error_u),
+                image_error_v=float(image_error_v),
+                joint_names=joint_names,
+                joint_positions=joint_positions,
+                prefer_joint_delta=False,
+            )
+            if not response.success:
+                rospy.logwarn(
+                    "GraspRefinement: NJF service returned failure: %s",
+                    response.message,
+                )
+                return 0.0, 0.0, False
+
+            rospy.loginfo(
+                "GraspRefinement: NJF correction x=%.4fm, y=%.4fm "
+                "(confidence=%.2f): %s",
+                response.x_correction_m,
+                response.y_correction_m,
+                response.confidence,
+                response.message,
+            )
+            return (
+                self._finite(response.x_correction_m),
+                self._finite(response.y_correction_m),
+                True,
+            )
+        except rospy.ROSException as e:
+            rospy.logwarn(f"GraspRefinement: NJF service timeout: {e}")
+        except Exception as e:
+            rospy.logwarn(f"GraspRefinement: NJF refinement error: {e}")
+
+        return 0.0, 0.0, False
 
 
 class PlanRefinedGrasp(smach.State):

@@ -26,6 +26,11 @@
     <arg name="dummy" default="false" doc="Run in dummy/simulation mode"/>
     <arg name="left_wrist_z_deg" default="80.0" doc="Left XL-320 forearm rotation for palm-facing grasp"/>
     <arg name="left_wrist_x_deg" default="0.0" doc="Left XL-320 wrist flex for palm-facing grasp"/>
+    <arg name="refinement_mode" default="mllm" doc="Grasp refinement mode: mllm, njf, or hybrid"/>
+    <arg name="njf_max_correction_m" default="0.025" doc="Max per-step NJF-inspired correction in meters"/>
+    <arg name="njf_max_joint_delta" default="0.08" doc="Max NJF-inspired joint delta in radians"/>
+    <arg name="njf_target_error_threshold" default="0.005" doc="Metric error threshold below which correction is zero"/>
+    <arg name="hybrid_njf_error_scale" default="0.25" doc="Fraction of MLLM correction fed to NJF in hybrid mode"/>
     
     <!-- Speech ASR parameters - adjust based on your microphone/environment -->
     <arg name="energy_silence" default="300" doc="Energy level for silence (increase for noisy environments)"/>
@@ -89,6 +94,13 @@
     <node name="ik_solver" pkg="elmira" type="ik_solver.py" required="false" output="screen">
         <env name="CUDA_VISIBLE_DEVICES" value=""/>
     </node>
+
+    <!-- NJF-inspired visual Jacobian refinement server (lightweight placeholder) -->
+    <node name="njf_predict_action_server" pkg="elmira" type="njf_predict_action_server.py" required="false" output="screen">
+        <param name="max_correction_m" value="$(arg njf_max_correction_m)"/>
+        <param name="max_joint_delta" value="$(arg njf_max_joint_delta)"/>
+        <param name="target_error_threshold" value="$(arg njf_target_error_threshold)"/>
+    </node>
     
     <!-- Text to Speech -->
     <node name="text_to_speech" pkg="nicoros" type="TextToSpeech.py" 
@@ -102,6 +114,9 @@
     <param name="/elmira/offset_z" value="$(arg offset_z)"/>
     <param name="/elmira/left_wrist_z_deg" value="$(arg left_wrist_z_deg)"/>
     <param name="/elmira/left_wrist_x_deg" value="$(arg left_wrist_x_deg)"/>
+    <param name="/elmira/refinement_mode" value="$(arg refinement_mode)"/>
+    <param name="/elmira/max_refinement_correction_m" value="0.05"/>
+    <param name="/elmira/hybrid_njf_error_scale" value="$(arg hybrid_njf_error_scale)"/>
     
     <param name="/use_mllm" value="true"/>
     <param name="/use_mllm_grounding" value="$(arg use_mllm_grounding)"/>

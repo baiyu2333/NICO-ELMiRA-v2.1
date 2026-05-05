@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="refinement_mode" default="njf"/>
+    <arg name="max_correction_m" default="0.025"/>
+    <arg name="max_joint_delta" default="0.08"/>
+    <arg name="target_error_threshold" default="0.005"/>
+    <arg name="image_error_threshold" default="0.02"/>
+    <arg name="metric_gain" default="0.75"/>
+    <arg name="image_gain_m_per_unit" default="0.08"/>
+    <arg name="hybrid_njf_error_scale" default="0.25"/>
+
+    <param name="/elmira/refinement_mode" value="$(arg refinement_mode)"/>
+    <param name="/elmira/max_refinement_correction_m" value="0.05"/>
+    <param name="/elmira/hybrid_njf_error_scale" value="$(arg hybrid_njf_error_scale)"/>
+
+    <node name="njf_predict_action_server" pkg="elmira" type="njf_predict_action_server.py" output="screen">
+        <param name="max_correction_m" value="$(arg max_correction_m)"/>
+        <param name="max_joint_delta" value="$(arg max_joint_delta)"/>
+        <param name="target_error_threshold" value="$(arg target_error_threshold)"/>
+        <param name="image_error_threshold" value="$(arg image_error_threshold)"/>
+        <param name="metric_gain" value="$(arg metric_gain)"/>
+        <param name="image_gain_m_per_unit" value="$(arg image_gain_m_per_unit)"/>
+    </node>
+</launch>

@@ -1,0 +1,23 @@
+# NJF-inspired visual Jacobian action prediction.
+#
+# This is intentionally small and ROS-native. It accepts either metric error
+# (meters in robot table coordinates) or normalized image error (roughly -1..1)
+# and returns a safe small correction. A trained NJF model can later replace
+# the internal controller without changing the grasp_refinement client.
+
+string planning_group
+float32 x_error_m
+float32 y_error_m
+float32 image_error_u
+float32 image_error_v
+string[] joint_names
+float32[] joint_positions
+bool prefer_joint_delta
+---
+bool success
+string message
+float32 x_correction_m
+float32 y_correction_m
+string[] joint_delta_names
+float32[] joint_deltas
+float32 confidence
