@@ -2,10 +2,18 @@
 <launch>
     <arg name="json_path" default="$(find elmira)/json/nico_humanoid_upper_fixed_usb0.json" doc="Path to the JSON which describes the motors in a way PyPot understands it." />
     <arg name="dummy" default="false" doc="Run in dummy/simulation mode (no hardware required)" />
+    <arg name="motion_respawn" default="true" doc="Restart Motion.py if USB/motor startup fails transiently" />
+    <arg name="motion_respawn_delay" default="3.0" doc="Seconds to wait before respawning Motion.py" />
+    <arg name="motion_startup_retries" default="6" doc="Motion.py hardware init attempts before process exit" />
+    <arg name="motion_startup_retry_delay" default="2.0" doc="Seconds between Motion.py hardware init attempts" />
+    <arg name="motion_disabled_motor_ids" default="[23, 24, 26, 28, 29, 30, 32]" doc="YAML list of motor IDs to remove from PyPot startup" />
     
     <!-- Derived arguments for node configuration -->
     <arg name="motion_args" value="-m $(arg json_path) --vrep" if="$(arg dummy)"/>
     <arg name="motion_args" value="-m $(arg json_path)" unless="$(arg dummy)"/>
+    <param name="/nico/motion/startupRetries" value="$(arg motion_startup_retries)"/>
+    <param name="/nico/motion/startupRetryDelay" value="$(arg motion_startup_retry_delay)"/>
+    <rosparam param="/nico/motion/disabledMotorIds" subst_value="true">$(arg motion_disabled_motor_ids)</rosparam>
     
     <!-- Make nodes strictly required only if NOT in dummy mode (to prevent crash loops) -->
     <!-- FOR DEBUGGING: Set to false to isolate crashes -->
@@ -13,7 +21,7 @@
     <!-- <arg name="required_val" value="false" if="$(arg dummy)"/> -->
     <!-- <arg name="required_val" value="true" unless="$(arg dummy)"/> -->
 
-    <node name="motion" pkg="nicoros" args="$(arg motion_args)" type="Motion.py" required="$(arg required_val)" output="screen">
+    <node name="motion" pkg="nicoros" args="$(arg motion_args)" type="Motion.py" required="$(arg required_val)" respawn="$(arg motion_respawn)" respawn_delay="$(arg motion_respawn_delay)" output="screen">
         <env name="CUDA_VISIBLE_DEVICES" value=""/>
     </node>
     

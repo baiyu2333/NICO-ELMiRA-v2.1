@@ -20,6 +20,7 @@ Palm Sensor Feedback:
 
 import time
 import threading
+import re
 import rospy
 import smach
 import nicomsg.msg
@@ -131,10 +132,12 @@ class HandControl(smach.State):
         "r_indexfingers_x": -150,
     }
     
-    # Left hand XL-320 motor IDs (Protocol 2.0)
+    # Left hand XL-320 motor IDs (Protocol 2.0).
+    # A safe ping scan on this robot found responders at:
+    # 30, 31, 33, 34, 35, 36, 37.
     LEFT_HAND_MOTOR_IDS = {
         "l_wrist_z":          30,   # Forearm rotation
-        "l_wrist_x":          31,   # Wrist flex  
+        "l_wrist_x":          31,   # Wrist flex
         "l_thumb_x":          33,   # Thumb
         "l_indexfinger_x":    34,   # Index finger
         "l_middlefingers_x":  35,   # Middle finger
@@ -143,19 +146,28 @@ class HandControl(smach.State):
     }
     
     # Left hand finger IDs only (for open/close, excluding wrist)
-    # 34: Thumb base, 35: Thumb joint, 36: Index, 37: Other fingers
-    LEFT_FINGER_IDS = [34, 35, 36, 37]
+    LEFT_FINGER_IDS = [33, 34, 35, 36, 37]
     
     # Left wrist motor IDs (also XL-320). The normal arm trajectory cannot
     # command these through pypot, so keep them aligned here when the hand acts.
-    LEFT_WRIST_Z_ID = 31
-    LEFT_WRIST_X_ID = 33
+    LEFT_WRIST_Z_ID = 30
+    LEFT_WRIST_X_ID = 31
     LEFT_WRIST_Z_DEG = 80.0   # Match ELMiRA's +1.39 rad palm-facing pose.
     LEFT_WRIST_X_DEG = 0.0
     
     # Positions for XL-320 left hand
     LEFT_HAND_OPEN_POS = -150.0    # All fingers fully open
     LEFT_HAND_CLOSE_POS = 60.0     # All fingers closed for grasping
+
+    @staticmethod
+    def _parse_int_list(value, default):
+        if value is None:
+            return list(default)
+        if isinstance(value, str):
+            parsed = [int(match) for match in re.findall(r"-?\d+", value)]
+        else:
+            parsed = [int(item) for item in value]
+        return parsed or list(default)
     
     def __init__(self):
         smach.State.__init__(
@@ -175,20 +187,37 @@ class HandControl(smach.State):
             "/nico/motion/xl320_cmd", nicomsg.msg.sff, queue_size=10
         )
 
+        self._left_finger_ids = self._parse_int_list(
+            rospy.get_param("/elmira/left_xl320_finger_ids", self.LEFT_FINGER_IDS),
+            self.LEFT_FINGER_IDS,
+        )
+        self._left_wrist_z_id = int(
+            rospy.get_param("/elmira/left_xl320_wrist_z_id", self.LEFT_WRIST_Z_ID)
+        )
+        self._left_wrist_x_id = int(
+            rospy.get_param("/elmira/left_xl320_wrist_x_id", self.LEFT_WRIST_X_ID)
+        )
+        self._left_hand_open_pos = float(
+            rospy.get_param("/elmira/left_hand_open_deg", self.LEFT_HAND_OPEN_POS)
+        )
+        self._left_hand_close_pos = float(
+            rospy.get_param("/elmira/left_hand_close_deg", self.LEFT_HAND_CLOSE_POS)
+        )
         self._left_wrist_positions = {
-            self.LEFT_WRIST_Z_ID: float(
-                rospy.get_param(
-                    "~left_wrist_z_deg",
-                    rospy.get_param("/elmira/left_wrist_z_deg", self.LEFT_WRIST_Z_DEG),
-                )
+            self._left_wrist_z_id: float(
+                rospy.get_param("/elmira/left_wrist_z_deg", self.LEFT_WRIST_Z_DEG)
             ),
-            self.LEFT_WRIST_X_ID: float(
-                rospy.get_param(
-                    "~left_wrist_x_deg",
-                    rospy.get_param("/elmira/left_wrist_x_deg", self.LEFT_WRIST_X_DEG),
-                )
+            self._left_wrist_x_id: float(
+                rospy.get_param("/elmira/left_wrist_x_deg", self.LEFT_WRIST_X_DEG)
             ),
         }
+        rospy.loginfo(
+            "HandControl: left XL-320 config wrist=%s fingers=%s open=%.1f close=%.1f",
+            self._left_wrist_positions,
+            self._left_finger_ids,
+            self._left_hand_open_pos,
+            self._left_hand_close_pos,
+        )
         
         # Palm sensor monitor
         self._palm = get_palm_monitor()
@@ -227,7 +256,9 @@ class HandControl(smach.State):
         which is handled by the Motion node using its own serial connection
         and pypot lock to safely send Protocol 2.0 packets.
         """
-        target_pos = self.LEFT_HAND_OPEN_POS if action == "open" else self.LEFT_HAND_CLOSE_POS
+        target_pos = (
+            self._left_hand_open_pos if action == "open" else self._left_hand_close_pos
+        )
         
         # Convert degrees to XL-320 raw value (0-1023, center=512)
         raw_pos = int((target_pos + 150.0) / 300.0 * 1023.0)
@@ -237,7 +268,9 @@ class HandControl(smach.State):
             rospy.loginfo(f"HandControl: XL-320 left hand {action} via ROS topic...")
             
             # ALL left hand XL-320 motor IDs (wrist + fingers)
-            all_motor_ids = list(self._left_wrist_positions.keys()) + self.LEFT_FINGER_IDS
+            all_motor_ids = sorted(
+                set(list(self._left_wrist_positions.keys()) + self._left_finger_ids)
+            )
             
             # Step 1: Enable torque on ALL motors (register 24 = 1)
             for motor_id in all_motor_ids:
@@ -261,13 +294,13 @@ class HandControl(smach.State):
             )
             
             # Step 4: Set finger positions
-            for motor_id in self.LEFT_FINGER_IDS:
+            for motor_id in self._left_finger_ids:
                 self._send_xl320_cmd(motor_id, 30, raw_pos)
                 rospy.sleep(0.005)
             
             rospy.loginfo(
                 f"HandControl: Left hand XL-320 {action} -> "
-                f"fingers {self.LEFT_FINGER_IDS} to {target_pos}° (raw={raw_pos})"
+                f"fingers {self._left_finger_ids} to {target_pos}° (raw={raw_pos})"
             )
         except Exception as e:
             rospy.logerr(f"HandControl: XL-320 left hand {action} error: {e}")

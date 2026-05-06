@@ -17,20 +17,48 @@
     <!-- Calibration Offsets -->
     <arg name="offset_x" default="0.0" doc="Calibration offset for X axis (meters)"/>
     <arg name="offset_y" default="0.105" doc="Calibration offset for Y axis (meters)"/>
+    <arg name="coord_scale_x" default="1.0" doc="Calibration scale for X axis after learned image-to-real model"/>
+    <arg name="coord_scale_y" default="1.0" doc="Calibration scale for Y axis after learned image-to-real model"/>
     <arg name="mllm_model" default="" doc="Model name (empty for provider default)"/>
     <arg name="use_owlv2_fallback" default="false" doc="Launch OWLv2 as fallback"/>
     <arg name="use_mllm_grounding" default="true" doc="Use MLLM for object detection"/>
     <arg name="temperature" default="0.7" doc="LLM temperature"/>
-    <arg name="image_topic" default="/nico/vision/right" doc="Camera topic"/>
+    <arg name="image_topic" default="/nico/vision/left" doc="Primary camera topic; current robot publishes left reliably"/>
+    <arg name="camera_mode" default="left" doc="Camera mode: left, right, or stereo"/>
     <arg name="json_path" default="$(find elmira)/json/nico_humanoid_upper_fixed_usb0.json" doc="Motor config JSON"/>
     <arg name="dummy" default="false" doc="Run in dummy/simulation mode"/>
+    <arg name="motion_respawn" default="true" doc="Restart Motion.py if USB/motor startup fails transiently"/>
+    <arg name="motion_respawn_delay" default="3.0" doc="Seconds to wait before respawning Motion.py"/>
+    <arg name="motion_startup_retries" default="6" doc="Motion.py hardware init attempts before process exit"/>
+    <arg name="motion_startup_retry_delay" default="2.0" doc="Seconds between Motion.py hardware init attempts"/>
+    <arg name="motion_disabled_motor_ids" default="[23, 24, 26, 28, 29, 30, 32]" doc="YAML list of motor IDs to remove from PyPot startup"/>
     <arg name="left_wrist_z_deg" default="80.0" doc="Left XL-320 forearm rotation for palm-facing grasp"/>
     <arg name="left_wrist_x_deg" default="0.0" doc="Left XL-320 wrist flex for palm-facing grasp"/>
+    <arg name="left_xl320_wrist_z_id" default="30" doc="Left XL-320 wrist/forearm rotation motor ID"/>
+    <arg name="left_xl320_wrist_x_id" default="31" doc="Left XL-320 wrist flex motor ID"/>
+    <arg name="left_xl320_finger_ids" default="[33, 34, 35, 36, 37]" doc="YAML list of left XL-320 finger motor IDs"/>
+    <arg name="left_hand_open_deg" default="-150.0" doc="Left XL-320 finger open target in degrees"/>
+    <arg name="left_hand_close_deg" default="60.0" doc="Left XL-320 finger close target in degrees"/>
+    <arg name="move_wait_max_checks" default="350" doc="Max joint-state checks per movement wait; 50 Hz feedback means 350 is about 7 seconds"/>
+    <arg name="table_z_base" default="0.7" doc="Nominal table/object grasp height in robot frame before offset_z"/>
+    <arg name="table_z_min" default="0.45" doc="Safety minimum for calibrated table_z"/>
+    <arg name="table_z_max" default="0.85" doc="Safety maximum for calibrated table_z"/>
+    <arg name="grasp_hover_z_offset" default="0.06" doc="Height above table_z for refined grasp hover pose"/>
+    <arg name="grasp_contact_z_offset" default="0.02" doc="Height above table_z for refined grasp/contact pose where hand closes"/>
+    <arg name="grasp_lift_z_offset" default="0.12" doc="Height above table_z for post-grasp lift pose"/>
     <arg name="refinement_mode" default="mllm" doc="Grasp refinement mode: mllm, njf, or hybrid"/>
     <arg name="njf_max_correction_m" default="0.025" doc="Max per-step NJF-inspired correction in meters"/>
     <arg name="njf_max_joint_delta" default="0.08" doc="Max NJF-inspired joint delta in radians"/>
     <arg name="njf_target_error_threshold" default="0.005" doc="Metric error threshold below which correction is zero"/>
     <arg name="hybrid_njf_error_scale" default="0.25" doc="Fraction of MLLM correction fed to NJF in hybrid mode"/>
+    <arg name="enable_njf_visual_error_estimator" default="false" doc="Enable OpenCV color-marker visual error estimator for NJF mode"/>
+    <arg name="njf_object_hsv_lower" default="[40, 80, 50]" doc="HSV lower threshold for object marker, default green"/>
+    <arg name="njf_object_hsv_upper" default="[85, 255, 255]" doc="HSV upper threshold for object marker, default green"/>
+    <arg name="njf_hand_hsv_lower" default="[100, 80, 50]" doc="HSV lower threshold for hand marker, default blue"/>
+    <arg name="njf_hand_hsv_upper" default="[130, 255, 255]" doc="HSV upper threshold for hand marker, default blue"/>
+    <arg name="njf_marker_min_area" default="80.0" doc="Minimum color blob area for NJF visual marker detection"/>
+    <arg name="njf_publish_debug_image" default="true" doc="Publish /elmira/njf_visual_error/debug_image"/>
+    <arg name="njf_meters_per_norm_error" default="0.0" doc="Optional approximate metric scale for normalized visual error"/>
     
     <!-- Speech ASR parameters - adjust based on your microphone/environment -->
     <arg name="energy_silence" default="300" doc="Energy level for silence (increase for noisy environments)"/>
@@ -39,9 +67,9 @@
     <arg name="energy_dynamic" default="true" doc="Dynamically adjust energy thresholds"/>
     <arg name="mic_device" default="" doc="Microphone device index or name"/>
     
-    <!-- Camera (Stereo to enable both eyes for cross-referencing) -->
+    <!-- Camera. Default to left-only because the current right stream is unreliable. -->
     <include file="$(find elmira)/launch/camera.launch">
-        <arg name="mode" value="stereo"/>
+        <arg name="mode" value="$(arg camera_mode)"/>
     </include>
     
     <!-- Derived argument for required nodes (only required if NOT dummy) -->
@@ -52,6 +80,11 @@
     <include file="$(find nicoros)/launch/joint_controller.launch">
         <arg name="json_path" value="$(arg json_path)"/>
         <arg name="dummy" value="$(arg dummy)"/>
+        <arg name="motion_respawn" value="$(arg motion_respawn)"/>
+        <arg name="motion_respawn_delay" value="$(arg motion_respawn_delay)"/>
+        <arg name="motion_startup_retries" value="$(arg motion_startup_retries)"/>
+        <arg name="motion_startup_retry_delay" value="$(arg motion_startup_retry_delay)"/>
+        <arg name="motion_disabled_motor_ids" value="$(arg motion_disabled_motor_ids)"/>
     </include>
     
     <!-- Speech ASR with adjusted thresholds -->
@@ -74,12 +107,14 @@
         <param name="model" value="$(arg mllm_model)"/>
         <param name="temperature" value="$(arg temperature)"/>
         <param name="image_topic" value="$(arg image_topic)"/>
+        <param name="fallback_image_topic" value="/nico/vision/left"/>
     </node>
     
     <!-- OWLv2 Object Localiser (optional fallback) -->
     <node name="object_localiser" pkg="elmira" type="object_localiser.py" 
           required="$(arg required_val)" output="screen" if="$(arg use_owlv2_fallback)">
           <env name="CUDA_VISIBLE_DEVICES" value=""/>
+          <param name="image_topic" value="$(arg image_topic)"/>
     </node>
     
     <!-- Coordinate Transfer -->
@@ -88,6 +123,8 @@
           <env name="CUDA_VISIBLE_DEVICES" value=""/>
           <param name="offset_x" value="$(arg offset_x)"/>
           <param name="offset_y" value="$(arg offset_y)"/>
+          <param name="scale_x" value="$(arg coord_scale_x)"/>
+          <param name="scale_y" value="$(arg coord_scale_y)"/>
     </node>
     
     <!-- IK Solver -->
@@ -101,6 +138,18 @@
         <param name="max_joint_delta" value="$(arg njf_max_joint_delta)"/>
         <param name="target_error_threshold" value="$(arg njf_target_error_threshold)"/>
     </node>
+
+    <!-- Optional color-marker visual error estimator for pure NJF mode -->
+    <node name="njf_visual_error_estimator" pkg="elmira" type="njf_visual_error_estimator.py" required="false" output="screen" if="$(arg enable_njf_visual_error_estimator)">
+        <param name="image_topic" value="$(arg image_topic)"/>
+        <param name="object_hsv_lower" value="$(arg njf_object_hsv_lower)"/>
+        <param name="object_hsv_upper" value="$(arg njf_object_hsv_upper)"/>
+        <param name="hand_hsv_lower" value="$(arg njf_hand_hsv_lower)"/>
+        <param name="hand_hsv_upper" value="$(arg njf_hand_hsv_upper)"/>
+        <param name="min_area" value="$(arg njf_marker_min_area)"/>
+        <param name="publish_debug_image" value="$(arg njf_publish_debug_image)"/>
+        <param name="meters_per_norm_error" value="$(arg njf_meters_per_norm_error)"/>
+    </node>
     
     <!-- Text to Speech -->
     <node name="text_to_speech" pkg="nicoros" type="TextToSpeech.py" 
@@ -111,12 +160,26 @@
     
     <!-- Set global params for state machine -->
     <arg name="offset_z" default="0.0" doc="Calibration offset for Z axis (meters)"/>
+    <param name="/elmira/table_z_base" value="$(arg table_z_base)"/>
     <param name="/elmira/offset_z" value="$(arg offset_z)"/>
+    <param name="/elmira/table_z_min" value="$(arg table_z_min)"/>
+    <param name="/elmira/table_z_max" value="$(arg table_z_max)"/>
     <param name="/elmira/left_wrist_z_deg" value="$(arg left_wrist_z_deg)"/>
     <param name="/elmira/left_wrist_x_deg" value="$(arg left_wrist_x_deg)"/>
+    <param name="/elmira/left_xl320_wrist_z_id" value="$(arg left_xl320_wrist_z_id)"/>
+    <param name="/elmira/left_xl320_wrist_x_id" value="$(arg left_xl320_wrist_x_id)"/>
+    <rosparam param="/elmira/left_xl320_finger_ids" subst_value="true">$(arg left_xl320_finger_ids)</rosparam>
+    <param name="/elmira/left_hand_open_deg" value="$(arg left_hand_open_deg)"/>
+    <param name="/elmira/left_hand_close_deg" value="$(arg left_hand_close_deg)"/>
+    <param name="/elmira/move_wait_max_checks" value="$(arg move_wait_max_checks)"/>
+    <param name="/elmira/grasp_hover_z_offset" value="$(arg grasp_hover_z_offset)"/>
+    <param name="/elmira/grasp_contact_z_offset" value="$(arg grasp_contact_z_offset)"/>
+    <param name="/elmira/grasp_lift_z_offset" value="$(arg grasp_lift_z_offset)"/>
     <param name="/elmira/refinement_mode" value="$(arg refinement_mode)"/>
+    <param name="/elmira/default_refine_eye" value="left"/>
     <param name="/elmira/max_refinement_correction_m" value="0.05"/>
     <param name="/elmira/hybrid_njf_error_scale" value="$(arg hybrid_njf_error_scale)"/>
+    <param name="/elmira/njf_visual_error_max_age" value="1.0"/>
     
     <param name="/use_mllm" value="true"/>
     <param name="/use_mllm_grounding" value="$(arg use_mllm_grounding)"/>

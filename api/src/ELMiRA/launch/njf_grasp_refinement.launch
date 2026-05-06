@@ -8,10 +8,19 @@
     <arg name="metric_gain" default="0.75"/>
     <arg name="image_gain_m_per_unit" default="0.08"/>
     <arg name="hybrid_njf_error_scale" default="0.25"/>
+    <arg name="image_topic" default="/nico/vision/left"/>
+    <arg name="object_hsv_lower" default="[40, 80, 50]"/>
+    <arg name="object_hsv_upper" default="[85, 255, 255]"/>
+    <arg name="hand_hsv_lower" default="[100, 80, 50]"/>
+    <arg name="hand_hsv_upper" default="[130, 255, 255]"/>
+    <arg name="min_area" default="80.0"/>
+    <arg name="publish_debug_image" default="true"/>
+    <arg name="meters_per_norm_error" default="0.0"/>
 
     <param name="/elmira/refinement_mode" value="$(arg refinement_mode)"/>
     <param name="/elmira/max_refinement_correction_m" value="0.05"/>
     <param name="/elmira/hybrid_njf_error_scale" value="$(arg hybrid_njf_error_scale)"/>
+    <param name="/elmira/njf_visual_error_max_age" value="1.0"/>
 
     <node name="njf_predict_action_server" pkg="elmira" type="njf_predict_action_server.py" output="screen">
         <param name="max_correction_m" value="$(arg max_correction_m)"/>
@@ -20,5 +29,16 @@
         <param name="image_error_threshold" value="$(arg image_error_threshold)"/>
         <param name="metric_gain" value="$(arg metric_gain)"/>
         <param name="image_gain_m_per_unit" value="$(arg image_gain_m_per_unit)"/>
+    </node>
+
+    <node name="njf_visual_error_estimator" pkg="elmira" type="njf_visual_error_estimator.py" output="screen">
+        <param name="image_topic" value="$(arg image_topic)"/>
+        <param name="object_hsv_lower" value="$(arg object_hsv_lower)"/>
+        <param name="object_hsv_upper" value="$(arg object_hsv_upper)"/>
+        <param name="hand_hsv_lower" value="$(arg hand_hsv_lower)"/>
+        <param name="hand_hsv_upper" value="$(arg hand_hsv_upper)"/>
+        <param name="min_area" value="$(arg min_area)"/>
+        <param name="publish_debug_image" value="$(arg publish_debug_image)"/>
+        <param name="meters_per_norm_error" value="$(arg meters_per_norm_error)"/>
     </node>
 </launch>

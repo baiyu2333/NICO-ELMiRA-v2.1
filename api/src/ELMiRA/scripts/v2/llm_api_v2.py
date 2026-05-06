@@ -69,7 +69,11 @@ class MLLMGateway:
         self.temperature = rospy.get_param("~temperature", 0.7)
         self.max_tokens = rospy.get_param("~max_tokens", 4096)
         self.timeout = rospy.get_param("~timeout", 30.0)
-        self.image_topic = rospy.get_param("~image_topic", "/nico/vision/right")
+        self.image_topic = rospy.get_param("~image_topic", "/nico/vision/left")
+        self.fallback_image_topic = rospy.get_param(
+            "~fallback_image_topic",
+            "/nico/vision/left" if self.image_topic != "/nico/vision/left" else "",
+        )
         self.cache_duration = rospy.get_param("~cache_duration", 0.5)
         
         # Context preservation
@@ -88,6 +92,12 @@ class MLLMGateway:
             topic=self.image_topic,
             cache_duration=self.cache_duration,
         )
+        self.fallback_image_cache = None
+        if self.fallback_image_topic and self.fallback_image_topic != self.image_topic:
+            self.fallback_image_cache = CachedImageGrabber(
+                topic=self.fallback_image_topic,
+                cache_duration=self.cache_duration,
+            )
         
         # Dedicated left eye cache for grasp refinement to avoid right-arm occlusion
         self.left_eye_cache = CachedImageGrabber(
@@ -164,7 +174,33 @@ class MLLMGateway:
     
     def _get_image(self) -> np.ndarray:
         """Get current camera frame."""
-        return self.image_cache.get_frame()
+        if self.image_cache.has_recent_frame(max_age=1.0):
+            return self.image_cache.get_frame(max_age=1.0)
+
+        if self.fallback_image_cache and self.fallback_image_cache.has_recent_frame(max_age=1.0):
+            rospy.logwarn_throttle(
+                10.0,
+                f"Primary image topic {self.image_topic} has no recent frame; "
+                f"using fallback {self.fallback_image_topic}",
+            )
+            return self.fallback_image_cache.get_frame(max_age=1.0)
+
+        image = self.image_cache.get_frame()
+        if self.fallback_image_cache and self._looks_like_no_camera_image(image):
+            rospy.logwarn_throttle(
+                10.0,
+                f"Primary image topic {self.image_topic} returned no-camera frame; "
+                f"using fallback {self.fallback_image_topic}",
+            )
+            return self.fallback_image_cache.get_frame()
+        return image
+
+    @staticmethod
+    def _looks_like_no_camera_image(image: np.ndarray) -> bool:
+        """Detect the dummy NO CAMERA frame returned by CachedImageGrabber."""
+        if image is None or not hasattr(image, "ndim") or image.ndim != 3:
+            return True
+        return float(image.mean()) < 8.0 and int(image.max()) > 200
     
     def handle_chat(self, request) -> PromptTextLLMResponse:
         """
@@ -437,7 +473,7 @@ class MLLMGateway:
         start_time = time.time()
         try:
             # Determine which eye to use based on parameter
-            camera_eye = rospy.get_param("/mllm_refine_eye", "right").lower()
+            camera_eye = rospy.get_param("/mllm_refine_eye", "left").lower()
             hand_side = rospy.get_param("/mllm_refine_hand", "right").lower()
             if hand_side not in ("left", "right"):
                 hand_side = "right"
@@ -445,8 +481,8 @@ class MLLMGateway:
                 image = self.left_eye_cache.get_frame()
                 eye_desc = "LEFT eye, which gives you a slightly angled, unblocked side-view"
             else:
-                image = self.image_cache.get_frame()
-                eye_desc = "main RIGHT eye (forehead camera)"
+                image = self._get_image()
+                eye_desc = f"primary camera topic {self.image_topic}"
                 
             prompt = (
                 f"You are controlling a robot arm. You are looking through the robot's {eye_desc}. "
@@ -537,6 +573,9 @@ class MLLMGateway:
         
         # Cleanup
         self.image_cache.stop()
+        if self.fallback_image_cache is not None:
+            self.fallback_image_cache.stop()
+        self.left_eye_cache.stop()
         rospy.loginfo("MLLM Gateway shutdown complete")
 
 

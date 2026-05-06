@@ -120,13 +120,25 @@ If specific left arm motors don't work, you can disable them in the Motion node 
 
 In [`api/src/nicoros/scripts/Motion.py`]Motion.py ) line 53:
 ```python
-"disabledMotorIds": [24, 26, 28, 30, 32],  # Add non-working motor IDs here
+"disabledMotorIds": [23, 24, 26, 28, 29, 30, 32],  # Add non-working motor IDs here
 ```
 
-Or set via ROS param before launching:
+Or set via launch argument:
 ```bash
-rosparam set /nico/motion/disabledMotorIds "[24, 26, 28, 30, 32]"
+roslaunch elmira init_nodes_v2.launch mllm_provider:=openai motion_disabled_motor_ids:="[23, 24, 26, 28, 29, 30, 32]"
 ```
+
+### 3.3 If Plugging the New Left Hand Kills `motion-2`
+If `motion-2` starts when the left hand cable is unplugged but fails when the left hand is plugged in, this is a Dynamixel bus problem, not a state machine problem. The new hand may be using a different protocol, wrong voltage, or a default/conflicting ID such as `1`, which can block replies from the main arm motors.
+
+Use this diagnostic command to remove all hand/wrist motors from PyPot startup and test whether the arm/head bus can still initialize:
+```bash
+roslaunch elmira init_nodes_v2.launch \
+  mllm_provider:=openai \
+  motion_disabled_motor_ids:="[23, 24, 25, 26, 28, 29, 30, 32]"
+```
+
+If it still fails with the left hand plugged in, do not keep that hand on the same `/dev/ttyUSB0` bus. Put the new left hand on a separate XL-320/Protocol 2 compatible adapter and power rail, or reconfigure its IDs/protocol safely before reconnecting it to the robot.
 
 ---
 
@@ -161,13 +173,30 @@ source devel/setup.bash
 roslaunch elmira init_nodes_v2.launch mllm_provider:=google
 
 # OR with OpenAI provider
-roslaunch elmira init_nodes_v2.launch mllm_provider:=openai
+roslaunch elmira init_nodes_v2.launch \
+  mllm_provider:=openai \
+  move_wait_max_checks:=350 \
+  offset_z:=-0.08 \
+  grasp_contact_z_offset:=0.02
 ```
+
+If the arm reaches the object but waits too long before closing the hand, reduce
+`move_wait_max_checks`. At 50 Hz, `350` is about 7 seconds and `250` is about 5
+seconds.
+
+If the hand is still too high above the object, lower `offset_z` gradually. Use
+`offset_z:=-0.08` first, then try `-0.12`, and only use `-0.15` if it is still
+clearly high. The refined grasp closes at `table_z + grasp_contact_z_offset`;
+keep `grasp_contact_z_offset` near `0.02` unless you are testing very carefully.
+
+### 4.4 Optional Workspace Debug View
+```bash
 source ~/catkin_ws/src/NICO-software/api/devel/setup.bash
 python3 ~/catkin_ws/src/NICO-software/api/src/ELMiRA/scripts/visualize_workspace.py
 
 source ~/catkin_ws/src/NICO-software/api/devel/setup.bash
 rqt_image_view /elmira/workspace_debug
+```
 
 ---
 
@@ -179,7 +208,7 @@ rqt_image_view /elmira/workspace_debug
 rostopic list
 
 # You should see:
-# /nico/vision/right        - Camera feed
+# /nico/vision/left         - Camera feed (current reliable default)
 # /nico/motion/...          - Motor control
 # /joint_states             - Joint positions
 ```
@@ -199,10 +228,10 @@ rosservice list | grep mllm
 ### 5.3 Test Camera Topic
 ```bash
 # Check if camera is publishing
-rostopic hz /nico/vision/right
+rostopic hz /nico/vision/left
 
 # View camera image (requires image_view)
-rosrun image_view image_view image:=/nico/vision/right
+rosrun image_view image_view image:=/nico/vision/left
 ```
 
 ### 5.4 Test MLLM Service
@@ -243,20 +272,56 @@ lsusb
 # Check v4l devices
 v4l2-ctl --list-devices
 
-# Try different video device
-roslaunch elmira camera.launch mode:=right
+# Start the reliable left camera stream
+roslaunch elmira camera.launch mode:=left
 ```
+
+### Left Hand Not Moving
+The current left hand is controlled as XL-320 / Dynamixel Protocol 2.0 motors on `/dev/ttyUSB0`.
+Stop `Motion.py` before scanning the bus:
+
+```bash
+rosnode kill /motion
+rosrun elmira xl320_scan.py --port /dev/ttyUSB0 --start-id 28 --end-id 38
+```
+
+Expected responders on the current robot are:
+
+```text
+30, 31, 33, 34, 35, 36, 37
+```
+
+The default launch mapping is:
+
+```bash
+roslaunch elmira init_nodes_v2.launch mllm_provider:=openai \
+  left_xl320_wrist_z_id:=30 \
+  left_xl320_wrist_x_id:=31 \
+  left_xl320_finger_ids:="[33, 34, 35, 36, 37]"
+```
+
+If a replacement hand uses different IDs, update those launch args instead of editing code.
+
+### Coordinate Not Accurate
+The image-to-real coordinate model was trained for the original camera setup. The current default uses the reliable left camera, so the mapping may need retuning:
+
+```bash
+roslaunch elmira init_nodes_v2.launch mllm_provider:=openai \
+  offset_x:=0.0 offset_y:=0.105 coord_scale_x:=1.0 coord_scale_y:=1.0
+```
+
+Use the `CoordTransfer` log lines to compare detected image coordinates with where the robot actually reaches, then adjust `offset_x` and `offset_y` first.
 
 ### Motor Connection Failed
 ```bash
 # Check serial permissions
-ls -la /dev/ttyACM*
+ls -la /dev/ttyUSB* /dev/ttyACM*
 
 # Try resetting USB
 sudo usbreset /dev/bus/usb/XXX/YYY  # Get XXX/YYY from lsusb
 
 # Check if port is in use
-sudo fuser /dev/ttyACM0
+sudo fuser /dev/ttyUSB0
 ```
 
 ### MLLM Gateway Error
@@ -437,10 +502,10 @@ speed: 0.3"
 ### Test 2: Camera
 ```bash
 # Check camera topic
-rostopic hz /nico/vision/right
+rostopic hz /nico/vision/left
 
 # View camera (if you have display)
-rosrun image_view image_view image:=/nico/vision/right
+rosrun image_view image_view image:=/nico/vision/left
 ```
 
 ### Test 3: MLLM Gateway (GPT-4o)
@@ -520,7 +585,7 @@ ls -la /dev/video*
 
 # Check camera node
 rosnode info /camera_node
-rostopic echo /nico/vision/right --noarr -n1
+rostopic echo /nico/vision/left --noarr -n1
 ```
 
 ### Speech ASR Not Hearing
@@ -539,11 +604,11 @@ rostopic echo /speech_text
 | Action | Command |
 |--------|---------|
 | Start ROS | `roscore` |
-| Launch robot | `roslaunch elmira init_nodes_v2.launch mllm_provider:=openai` |
+| Launch robot | `roslaunch elmira init_nodes_v2.launch mllm_provider:=openai move_wait_max_checks:=350 offset_z:=-0.08 grasp_contact_z_offset:=0.02` |
 | Run state machine | `rosrun elmira state_machine.py` |
 | Check nodes | `rosnode list` |
 | Check topics | `rostopic list` |
-| View camera | `rosrun image_view image_view image:=/nico/vision/right` |
+| View camera | `rosrun image_view image_view image:=/nico/vision/left` |
 | Stop all | `Ctrl+C` in each terminal |
 
 ---
@@ -559,7 +624,7 @@ roscore
 # Terminal 2
 cd ~/catkin_ws/src/NICO-software/api && source activate.bash && source devel/setup.bash
 export OPENAI_API_KEY="sk-your-key-here"
-roslaunch elmira init_nodes_v2.launch mllm_provider:=openai
+roslaunch elmira init_nodes_v2.launch mllm_provider:=openai move_wait_max_checks:=350 offset_z:=-0.08 grasp_contact_z_offset:=0.02
 
 # Terminal 3 (after Terminal 2 is fully loaded)
 cd ~/catkin_ws/src/NICO-software/api && source activate.bash && source devel/setup.bash

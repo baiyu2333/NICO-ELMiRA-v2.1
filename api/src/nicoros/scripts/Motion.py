@@ -3,6 +3,7 @@
 import argparse
 import logging
 import math
+import re
 import struct
 import sys
 import threading
@@ -56,8 +57,20 @@ class NicoRosMotion:
             # Exclude known broken/mixed-protocol hand motors from pypot startup.
             # Left hand XL-320 motors are handled through /xl320_cmd; right finger
             # ID 29 is currently overloaded/broken and should not block startup.
-            "disabledMotorIds": [24, 26, 28, 29, 30, 32],
+            "disabledMotorIds": [23, 24, 26, 28, 29, 30, 32],
+            # The Dynamixel bus sometimes needs a second scan after USB reset or
+            # after a previous Motion process releases /dev/ttyUSB0.
+            "startupRetries": 6,
+            "startupRetryDelay": 2.0,
         }
+
+    @staticmethod
+    def _parse_int_list(value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [int(match) for match in re.findall(r"-?\d+", value)]
+        return [int(item) for item in value]
 
     def __init__(self, config=None):
         """
@@ -94,6 +107,14 @@ class NicoRosMotion:
             config["disabledMotorIds"] = rospy.get_param(
                 config["rostopicName"] + "/disabledMotorIds"
             )
+        if rospy.has_param(config["rostopicName"] + "/startupRetries"):
+            config["startupRetries"] = rospy.get_param(
+                config["rostopicName"] + "/startupRetries"
+            )
+        if rospy.has_param(config["rostopicName"] + "/startupRetryDelay"):
+            config["startupRetryDelay"] = rospy.get_param(
+                config["rostopicName"] + "/startupRetryDelay"
+            )
 
         # init Motion
         self.logger.info("-- Init NicoRosMotion --")
@@ -106,14 +127,29 @@ class NicoRosMotion:
             vrepConfig["vrep_scene"] = config["vrepScene"]
             vrepConfig["vrep_host"] = config["vrepHost"]
             vrepConfig["vrep_port"] = config["vrepPort"]
-        disabled_ids = [int(x) for x in config.get("disabledMotorIds", [])]
-        self.robot = Motion(
-            motorConfig=config["robotMotorFile"],
-            vrep=config["vrep"],
-            vrepConfig=vrepConfig,
-            ignoreMissing=True,
-            disabled_ids=disabled_ids,
-        )
+        disabled_ids = NicoRosMotion._parse_int_list(config.get("disabledMotorIds", []))
+        startup_retries = max(1, int(config.get("startupRetries", 1)))
+        startup_retry_delay = max(0.0, float(config.get("startupRetryDelay", 0.0)))
+        last_error = None
+        for attempt in range(1, startup_retries + 1):
+            try:
+                self.robot = Motion(
+                    motorConfig=config["robotMotorFile"],
+                    vrep=config["vrep"],
+                    vrepConfig=vrepConfig,
+                    ignoreMissing=True,
+                    disabled_ids=disabled_ids,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning(
+                    f"Motion init failed on attempt {attempt}/{startup_retries}: {exc}"
+                )
+                if attempt < startup_retries:
+                    time.sleep(startup_retry_delay)
+        if self.robot is None:
+            raise last_error
 
         # init ROS
         self.logger.debug("Init ROS")

@@ -102,10 +102,27 @@ def main():
     sm.userdata.motion_look_down_names = ["head_z", "head_y"]
     # Note: Negative head_y looks DOWN, positive looks UP
     sm.userdata.motion_look_down_positions = [0.0, -0.5]
-    base_table_z = 0.7
-    offset_z = rospy.get_param("/elmira/offset_z", 0.0)
-    sm.userdata.table_z = base_table_z + offset_z
-    rospy.loginfo(f"Table Z set to {sm.userdata.table_z} (Base {base_table_z} + Offset {offset_z})")
+    base_table_z = float(rospy.get_param("/elmira/table_z_base", 0.7))
+    offset_z = float(rospy.get_param("/elmira/offset_z", 0.0))
+    table_z_min = float(rospy.get_param("/elmira/table_z_min", 0.45))
+    table_z_max = float(rospy.get_param("/elmira/table_z_max", 0.85))
+    if table_z_min > table_z_max:
+        rospy.logwarn(
+            f"Invalid table Z bounds ({table_z_min}, {table_z_max}); swapping them"
+        )
+        table_z_min, table_z_max = table_z_max, table_z_min
+    raw_table_z = base_table_z + offset_z
+    sm.userdata.table_z = min(max(raw_table_z, table_z_min), table_z_max)
+    if sm.userdata.table_z != raw_table_z:
+        rospy.logwarn(
+            f"Table Z clamped to {sm.userdata.table_z:.3f} "
+            f"from {raw_table_z:.3f} (Base {base_table_z:.3f} + Offset {offset_z:.3f})"
+        )
+    else:
+        rospy.loginfo(
+            f"Table Z set to {sm.userdata.table_z:.3f} "
+            f"(Base {base_table_z:.3f} + Offset {offset_z:.3f})"
+        )
     # TTS
     sm.userdata.tts_language = "en"
     sm.userdata.tts_pitch = 0.0
@@ -447,14 +464,16 @@ def main():
                     },
                 )
                 
-                # Setup parameters for Stage 2 Macro-refinement (Right Eye, no close)
+                # Setup parameters for Stage 2 Macro-refinement (left eye, no close).
+                # The current robot setup publishes the left stream reliably;
+                # the right stream can be re-enabled after camera repair.
                 @smach.cb_interface(
                     input_keys=[],
                     output_keys=["camera_eye", "close_hand"],
                     outcomes=["done"],
                 )
                 def prepare_stage2_cb(userdata):
-                    userdata.camera_eye = "right"
+                    userdata.camera_eye = rospy.get_param("/elmira/default_refine_eye", "left")
                     userdata.close_hand = False
                     return "done"
                     
@@ -464,7 +483,7 @@ def main():
                     {"done": "GRASP_REFINEMENT_STAGE2"}
                 )
                 
-                # Visual servoing Stage 2: right eye observation and horizontal slide
+                # Visual servoing Stage 2: camera observation and horizontal slide
                 smach.StateMachine.add(
                     "GRASP_REFINEMENT_STAGE2",
                     GraspRefinement(),

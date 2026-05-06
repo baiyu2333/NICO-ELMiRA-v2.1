@@ -1,5 +1,5 @@
 <launch>
-  <arg name="mode" default="right"/>
+  <arg name="mode" default="left"/>
   <arg name="width" default="640"/>
   <arg name="height" default="480"/>
   <arg name="framerate" default="30"/>

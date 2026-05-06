@@ -52,6 +52,7 @@ The current project now includes a lightweight ROS-native refinement module:
 
 ```text
 api/src/ELMiRA/scripts/njf_predict_action_server.py
+api/src/ELMiRA/scripts/njf_visual_error_estimator.py
 api/src/ELMiRA/srv/NJFPredictAction.srv
 api/src/ELMiRA/launch/njf_grasp_refinement.launch
 ```
@@ -74,8 +75,10 @@ planner:
 - `target_error_threshold`: default `0.005` m below which correction is zero.
 - Workspace clamping via the existing ELMiRA workspace limits.
 
-The service is intended to be replaced later by a trained NICO NJF model without
-changing the SMACH grasp pipeline.
+Pure `njf` mode currently gets its visual error from
+`njf_visual_error_estimator.py`, a simple OpenCV color-marker detector. The
+service internals are intended to be replaced later by a trained NICO NJF model
+without changing the SMACH grasp pipeline.
 
 ## Refinement Modes
 
@@ -83,9 +86,9 @@ changing the SMACH grasp pipeline.
 
 - `mllm`: existing behavior. Calls `mllm_refine_grasp` and uses MLLM-estimated
   `x_offset_meters` / `y_offset_meters`.
-- `njf`: calls `njf_predict_action`. For now it uses metric/image error supplied
-  through ROS params such as `/elmira/njf_x_error_m`, `/elmira/njf_y_error_m`,
-  `/elmira/njf_image_error_u`, and `/elmira/njf_image_error_v`.
+- `njf`: requires valid visual error from the color-marker estimator, then calls
+  `njf_predict_action`. If either marker is missing or too small, it returns zero
+  correction safely.
 - `hybrid`: calls MLLM first for a coarse correction, then feeds that correction
   into `njf_predict_action` for a bounded micro-correction. By default only
   `25%` of the MLLM offset is used as the NJF micro-error input
@@ -93,6 +96,68 @@ changing the SMACH grasp pipeline.
   NJF is unavailable, the MLLM correction is still used.
 
 Default mode remains `mllm` for safety.
+
+## Color-Marker Visual Error Estimator
+
+`njf_visual_error_estimator.py` subscribes to a camera image, detects two colored
+markers, and writes normalized image error params:
+
+```text
+/elmira/njf_image_error_u = object_center_u - hand_center_u
+/elmira/njf_image_error_v = object_center_v - hand_center_v
+/elmira/njf_visual_error_valid
+/elmira/njf_hand_visible
+/elmira/njf_object_visible
+/elmira/njf_visual_error_stamp
+```
+
+The `u` and `v` errors are normalized by half the image width/height so values
+are roughly in `[-1, 1]`. If either marker is not visible or the blob area is
+below `min_area`, `njf_visual_error_valid` is set to `false` and all errors are
+set to zero. Pure `njf` mode also rejects stale visual errors older than
+`/elmira/njf_visual_error_max_age` seconds, default `1.0`.
+
+Default marker colors:
+
+- Object marker: green tape/sticker, HSV `[40, 80, 50]` to `[85, 255, 255]`.
+- Hand marker: blue tape/sticker, HSV `[100, 80, 50]` to `[130, 255, 255]`.
+
+Put a clearly visible colored marker on the target object and another marker on
+the visible side of the NICO gripper/hand. Avoid colors already common in the
+scene. Red markers can work, but red wraps around the HSV hue boundary, so blue
+is the safer default unless you tune the thresholds carefully.
+
+Debug output:
+
+```bash
+rqt_image_view /elmira/njf_visual_error/debug_image
+rostopic echo /elmira/njf_visual_error/status
+```
+
+Tune HSV thresholds by launching with custom values:
+
+```bash
+roslaunch elmira njf_grasp_refinement.launch \
+  refinement_mode:=njf \
+  image_topic:=/nico/vision/right \
+  object_hsv_lower:="[40, 80, 50]" \
+  object_hsv_upper:="[85, 255, 255]" \
+  hand_hsv_lower:="[100, 80, 50]" \
+  hand_hsv_upper:="[130, 255, 255]" \
+  min_area:=80
+```
+
+The estimator does **not** output precise metric errors by default. It sets
+`/elmira/njf_x_error_m` and `/elmira/njf_y_error_m` to `0.0`. If you provide
+`meters_per_norm_error`, it will approximate:
+
+```text
+x_error_m = image_error_v * meters_per_norm_error
+y_error_m = image_error_u * meters_per_norm_error
+```
+
+This scale is camera/setup dependent. Keep it small and treat it as rough visual
+servoing, not calibrated 3D geometry.
 
 ## Build After Adding the Service
 
@@ -117,6 +182,15 @@ Start with the NJF-inspired service available but use hybrid refinement:
 
 ```bash
 roslaunch elmira init_nodes_v2.launch mllm_provider:=openai refinement_mode:=hybrid
+```
+
+Start the full stack with pure marker-based NJF refinement:
+
+```bash
+roslaunch elmira init_nodes_v2.launch \
+  mllm_provider:=openai \
+  refinement_mode:=njf \
+  enable_njf_visual_error_estimator:=true
 ```
 
 Run only the NJF-inspired refinement server for isolated testing:
@@ -161,10 +235,12 @@ For serious NJF training, collect:
 2. Use `njf_data_recorder.py` to collect NICO-specific visual/action data.
 3. Use `njf_predict_action_server.py` as the current safe visual-Jacobian
    placeholder for small correction experiments.
-4. Train a real NJF model outside ROS in a separate Python 3.10/CUDA environment.
-5. Replace the placeholder internals with a trained NICO checkpoint that proposes
+4. Use `njf_visual_error_estimator.py` for early marker-based visual-error
+   experiments while collecting data.
+5. Train a real NJF model outside ROS in a separate Python 3.10/CUDA environment.
+6. Replace the placeholder internals with a trained NICO checkpoint that proposes
    joint deltas or Cartesian corrections through the same ROS service.
-6. Gate NJF output through the existing workspace limits and motor filters before
+7. Gate NJF output through the existing workspace limits and motor filters before
    sending commands to `/nico/motion/setAngle` or `/nico/motion/xl320_cmd`.
 
 ## Environment Notes

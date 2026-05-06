@@ -51,7 +51,7 @@
     ```
 
     Image topics:
-    - `/nico/vision/right`: raw camera image
+    - `/nico/vision/left`: raw camera image on the current robot setup
     - `/owlv2_server/result_image`: camera image with detected bounding boxes and class labels
     - `/smach_image_publisher/image(/compressed)`: image of the state machine with the current state highlighted
     - `/smach_viewer/image`: live image of the smach_viewer gui

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import pprint
 import re
 import subprocess
@@ -178,7 +179,22 @@ class Motion:
                 self._vrepIO = self._robot._controllers[0].io
         else:
             self._logger.info("Using robot")
-            self._adjust_port_latency()
+            configured_ids = sorted(
+                {
+                    int(motor["id"])
+                    for motor in config.get("motors", {}).values()
+                    if int(motor.get("id", -1)) not in disabled_ids
+                }
+            )
+            configured_ports = [
+                str(controller.get("port"))
+                for controller in config.get("controllers", {}).values()
+                if str(controller.get("port", "auto")).lower() != "auto"
+            ]
+            self._adjust_port_latency(
+                scan_ids=configured_ids,
+                preferred_ports=configured_ports,
+            )
 
             def remove_missing(ids):
                 for id in ids:
@@ -333,7 +349,7 @@ class Motion:
         for motor in self._robot.motors:
             self.safeState[motor.name] = motor.present_position
 
-    def _adjust_port_latency(self):
+    def _adjust_port_latency(self, scan_ids=None, preferred_ports=None):
         """
         Lowers the latency of the NICO port to prevent communication delays
         """
@@ -348,6 +364,17 @@ class Motion:
             )
             raise e
 
+        for port in preferred_ports or []:
+            if not os.path.exists(port):
+                self._logger.warning(
+                    "Configured port %s does not exist - falling back to port scan",
+                    port,
+                )
+                continue
+            self._logger.info("Setting configured port %s to low latency", port)
+            subprocess.call(["setserial", port, "low_latency"])
+            return
+
         # get all ports
         ports = pypot.dynamixel.get_available_ports()
 
@@ -355,12 +382,15 @@ class Motion:
             self._logger.warning("No available ports found - skipping latency adjustment")
             return
 
-        # find a port which has dynamixel motors attached
-        ids = range(48)
+        # Find a port with configured Protocol 1.0 motors attached. Do not scan
+        # the whole 0..47 range here: a new left XL-320 hand on the same wire can
+        # use Protocol 2.0 IDs in that range and disturb PyPot startup.
+        ids = list(scan_ids) if scan_ids else list(range(48))
         motors_found = False
         for port in ports:
             # Retry mechanism for potentially unstable connections
             for attempt in range(3):
+                dxl_io = None
                 try:
                     self._logger.info("connecting to {} (attempt {}/3)".format(port, attempt + 1))
                     dxl_io = pypot.dynamixel.DxlIO(port)
@@ -377,12 +407,19 @@ class Motion:
                         "Unexpected error on {} (attempt {}/3): {}".format(port, attempt + 1, e)
                     )
                     time.sleep(0.5)
+                finally:
+                    if dxl_io is not None:
+                        try:
+                            dxl_io.close()
+                        except Exception:
+                            pass
             
             if motors_found:
                 break
 
         if not motors_found:
             self._logger.warning("No valid port found - skipping latency adjustment")
+            return
 
         # set latency
         self._logger.info("Setting port {} to low latency".format(port))

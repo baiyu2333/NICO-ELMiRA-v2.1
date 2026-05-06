@@ -4,7 +4,7 @@
 
 string prompt                    # User/system text input
 bool include_image               # If true, capture and send current camera frame
-string image_topic               # Camera topic (default: /nico/vision/right)
+string image_topic               # Camera topic (default: /nico/vision/left)
 float32 temperature              # LLM temperature (0.0-2.0, default: 0.7)
 int32 max_tokens                 # Max response tokens (default: 1024)
 ---

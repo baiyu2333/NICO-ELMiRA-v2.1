@@ -51,7 +51,7 @@ class CachedImageGrabber:
     
     def __init__(
         self,
-        topic: str = "/nico/vision/right",
+        topic: str = "/nico/vision/left",
         cache_duration: float = 0.5,
         auto_subscribe: bool = True,
     ):
@@ -168,7 +168,7 @@ class CachedImageGrabber:
 _global_grabber: Optional[CachedImageGrabber] = None
 
 
-def get_cached_grabber(topic: str = "/nico/vision/right") -> CachedImageGrabber:
+def get_cached_grabber(topic: str = "/nico/vision/left") -> CachedImageGrabber:
     """Get or create global cached image grabber."""
     global _global_grabber
     if _global_grabber is None:

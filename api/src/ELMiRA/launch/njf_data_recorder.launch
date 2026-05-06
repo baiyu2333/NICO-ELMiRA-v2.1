@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <launch>
     <arg name="output_dir" default="/tmp/nico_njf_dataset"/>
-    <arg name="image_topic" default="/nico/vision/right"/>
+    <arg name="image_topic" default="/nico/vision/left"/>
     <arg name="sample_rate_hz" default="2.0"/>
 
     <node name="njf_data_recorder" pkg="elmira" type="njf_data_recorder.py" output="screen">

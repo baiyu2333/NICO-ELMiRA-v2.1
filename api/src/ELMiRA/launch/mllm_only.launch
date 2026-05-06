@@ -13,10 +13,13 @@
     <arg name="mllm_provider" default="openai" doc="MLLM provider: openai or google"/>
     <arg name="mllm_model" default="" doc="Model name (empty for provider default)"/>
     <arg name="temperature" default="0.7" doc="LLM temperature"/>
-    <arg name="image_topic" default="/nico/vision/right" doc="Camera topic"/>
+    <arg name="image_topic" default="/nico/vision/left" doc="Primary camera topic; current robot publishes left reliably"/>
+    <arg name="camera_mode" default="left" doc="Camera mode: left, right, or stereo"/>
     
     <!-- Camera -->
-    <include file="$(find elmira)/launch/camera.launch"/>
+    <include file="$(find elmira)/launch/camera.launch">
+        <arg name="mode" value="$(arg camera_mode)"/>
+    </include>
     
     <!-- MLLM Gateway (v2) -->
     <node name="mllm_gateway" pkg="elmira" type="llm_api_v2.py" required="true" output="screen">
@@ -24,5 +27,6 @@
         <param name="model" value="$(arg mllm_model)"/>
         <param name="temperature" value="$(arg temperature)"/>
         <param name="image_topic" value="$(arg image_topic)"/>
+        <param name="fallback_image_topic" value="/nico/vision/left"/>
     </node>
 </launch>

@@ -49,7 +49,7 @@ class NJFDataRecorder:
         self.images_dir = self.output_dir / "images"
         self.images_dir.mkdir(parents=True, exist_ok=True)
 
-        self.image_topic = rospy.get_param("~image_topic", "/nico/vision/right")
+        self.image_topic = rospy.get_param("~image_topic", "/nico/vision/left")
         self.left_joint_topic = rospy.get_param(
             "~left_joint_topic", "/left/open_manipulator_p/joint_states"
         )

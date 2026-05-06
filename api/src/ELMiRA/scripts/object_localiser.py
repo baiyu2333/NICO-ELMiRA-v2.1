@@ -129,6 +129,7 @@ class OWLv2Server:
         rospy.init_node("owlv2_server")
         self.owlv2 = OWLv2("owlv2")
         self.bridge = cv_bridge.CvBridge()
+        self.image_topic = rospy.get_param("~image_topic", "/nico/vision/left")
         rospy.Service("object_detector", DetectObjects, self.detection_request_handler)
         # TODO make optional?
         self.debug_pub = rospy.Publisher(
@@ -143,7 +144,7 @@ class OWLv2Server:
     def detection_request_handler(self, request):
         # get latest camera image
         img_msg = rospy.wait_for_message(
-            "/nico/vision/right",
+            self.image_topic,
             sensor_msgs.msg.Image,
         )
         # convert message to PIL image

@@ -46,14 +46,17 @@ class ImplicitCoordinateTransferServer:
             .cpu()
         )
         # Apply manual offsets for calibration
+        scale_x = rospy.get_param("~scale_x", 1.0)
+        scale_y = rospy.get_param("~scale_y", 1.0)
         offset_x = rospy.get_param("~offset_x", 0.0)
         offset_y = rospy.get_param("~offset_y", 0.0)
         
-        real_x = raw_real_x + offset_x
-        real_y = raw_real_y + offset_y
+        real_x = raw_real_x * scale_x + offset_x
+        real_y = raw_real_y * scale_y + offset_y
         
         rospy.loginfo(
             f"CoordTransfer: raw=({raw_real_x:.4f}, {raw_real_y:.4f}) "
+            f"* scale=({scale_x:.4f}, {scale_y:.4f}) "
             f"+ offset=({offset_x:.4f}, {offset_y:.4f}) "
             f"= final=({real_x:.4f}, {real_y:.4f})"
         )

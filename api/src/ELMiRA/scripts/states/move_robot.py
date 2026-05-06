@@ -11,6 +11,20 @@ import rospy
 from utils.constants import filter_commandable_joints
 
 
+def _get_move_wait_max_checks():
+    """Return bounded movement wait checks for 50 Hz joint-state monitors."""
+    default_checks = 350  # 50 Hz feedback -> ~7 seconds.
+    try:
+        checks = int(rospy.get_param("/elmira/move_wait_max_checks", default_checks))
+    except (TypeError, ValueError):
+        rospy.logwarn(
+            "MoveRobotPart: invalid /elmira/move_wait_max_checks; "
+            f"using {default_checks}"
+        )
+        return default_checks
+    return max(1, checks)
+
+
 class JointTrajectoryIterator(smach.Iterator):
     """Executes a sequence of joint movements."""
 
@@ -212,6 +226,11 @@ class MoveRobotPart(smach.Sequence):
     """Move robot part and monitor state until success."""
 
     def __init__(self, srv_topic, sub_topic):
+        move_wait_max_checks = _get_move_wait_max_checks()
+        rospy.loginfo(
+            f"MoveRobotPart: waiting up to {move_wait_max_checks} joint-state checks "
+            f"on {sub_topic}"
+        )
         super(MoveRobotPart, self).__init__(
             input_keys=["names", "positions"],
             outcomes=["succeeded", "aborted", "preempted"],
@@ -269,7 +288,7 @@ class MoveRobotPart(smach.Sequence):
                     sub_topic,
                     JointState,
                     target_joint_state_reached_cb,
-                    max_checks=1500,  # publisher at 50hz = 30 second timeout
+                    max_checks=move_wait_max_checks,
                     input_keys=["names", "positions"],
                 ),
                 transitions={"valid": "succeeded", "invalid": "succeeded"},

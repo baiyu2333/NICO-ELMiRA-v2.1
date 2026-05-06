@@ -61,7 +61,7 @@ WORKSPACE_POLYGON = np.array([
 def main():
     rospy.init_node("workspace_visualizer", anonymous=True)
 
-    camera_topic = rospy.get_param("~camera_topic", "/nico/vision/right")
+    camera_topic = rospy.get_param("~camera_topic", "/nico/vision/left")
     debug_pub = rospy.Publisher(
         "/elmira/workspace_debug",
         Image,

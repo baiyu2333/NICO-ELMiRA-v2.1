@@ -33,6 +33,24 @@ from elmira.srv import (
 from utils.constants import clamp_to_workspace, get_arm_orientation
 
 
+def _bounded_float_param(name, default_value, min_value, max_value):
+    """Read a float ROS param and clamp it to a safe range."""
+    try:
+        value = float(rospy.get_param(name, default_value))
+    except (TypeError, ValueError):
+        rospy.logwarn(f"Invalid {name}; using {default_value}")
+        value = default_value
+    if min_value > max_value:
+        min_value, max_value = max_value, min_value
+    clamped = min(max(value, min_value), max_value)
+    if clamped != value:
+        rospy.logwarn(
+            f"{name}={value:.3f} is outside safe range "
+            f"[{min_value:.3f}, {max_value:.3f}], clamped to {clamped:.3f}"
+        )
+    return clamped
+
+
 class GraspRefinement(smach.StateMachine):
     """
     Visual servoing refinement for grasp actions.
@@ -156,7 +174,7 @@ class CallRefinementService(smach.State):
         target_name = userdata.target_object
         if isinstance(target_name, (list, tuple)):
             target_name = target_name[0] if target_name else "the object"
-        camera_eye = str(getattr(userdata, "camera_eye", "right"))
+        camera_eye = str(getattr(userdata, "camera_eye", "left"))
         planning_group = str(getattr(userdata, "planning_group", "r_arm"))
         hand_side = "left" if planning_group.startswith("l") else "right"
 
@@ -176,7 +194,10 @@ class CallRefinementService(smach.State):
         if mode == "mllm":
             x_off, y_off, ok = self._call_mllm_refinement()
         elif mode == "njf":
-            x_off, y_off, ok = self._call_njf_refinement(userdata)
+            x_off, y_off, ok = self._call_njf_refinement(
+                userdata,
+                require_visual_error=True,
+            )
         elif mode == "hybrid":
             coarse_x, coarse_y, coarse_ok = self._call_mllm_refinement()
             micro_error_scale = float(
@@ -186,6 +207,7 @@ class CallRefinementService(smach.State):
                 userdata,
                 x_error_m=coarse_x * micro_error_scale,
                 y_error_m=coarse_y * micro_error_scale,
+                require_visual_error=False,
             )
             x_off = coarse_x + micro_x
             y_off = coarse_y + micro_y
@@ -266,14 +288,50 @@ class CallRefinementService(smach.State):
         except Exception:
             return [], []
 
-    def _call_njf_refinement(self, userdata, x_error_m=None, y_error_m=None):
+    def _visual_error_valid(self):
+        valid = bool(rospy.get_param("/elmira/njf_visual_error_valid", False))
+        stamp = self._finite(rospy.get_param("/elmira/njf_visual_error_stamp", 0.0))
+        max_age = float(rospy.get_param("/elmira/njf_visual_error_max_age", 1.0))
+        if not valid or stamp <= 0.0:
+            return False
+        age = rospy.Time.now().to_sec() - stamp
+        if age > max_age:
+            rospy.logwarn(
+                "GraspRefinement: NJF visual error is stale "
+                f"(age={age:.2f}s > {max_age:.2f}s)"
+            )
+            return False
+        return True
+
+    def _call_njf_refinement(
+        self,
+        userdata,
+        x_error_m=None,
+        y_error_m=None,
+        require_visual_error=False,
+    ):
         planning_group = str(getattr(userdata, "planning_group", "r_arm"))
+        visual_error_valid = self._visual_error_valid()
+        if require_visual_error and not visual_error_valid:
+            hand_visible = bool(rospy.get_param("/elmira/njf_hand_visible", False))
+            object_visible = bool(rospy.get_param("/elmira/njf_object_visible", False))
+            rospy.logwarn(
+                "GraspRefinement: NJF visual error invalid; "
+                f"hand_visible={hand_visible}, object_visible={object_visible}. "
+                "Using zero correction."
+            )
+            return 0.0, 0.0, False
+
         if x_error_m is None:
             x_error_m = rospy.get_param("/elmira/njf_x_error_m", 0.0)
         if y_error_m is None:
             y_error_m = rospy.get_param("/elmira/njf_y_error_m", 0.0)
-        image_error_u = rospy.get_param("/elmira/njf_image_error_u", 0.0)
-        image_error_v = rospy.get_param("/elmira/njf_image_error_v", 0.0)
+        if visual_error_valid:
+            image_error_u = rospy.get_param("/elmira/njf_image_error_u", 0.0)
+            image_error_v = rospy.get_param("/elmira/njf_image_error_v", 0.0)
+        else:
+            image_error_u = 0.0
+            image_error_v = 0.0
         joint_names, joint_positions = self._latest_joint_state(planning_group)
 
         try:
@@ -362,23 +420,39 @@ class PlanRefinedGrasp(smach.State):
             f"[correction: ({userdata.x_correction:.4f}, {userdata.y_correction:.4f})]"
         )
         
+        hover_z_offset = _bounded_float_param(
+            "/elmira/grasp_hover_z_offset", 0.06, 0.02, 0.20
+        )
+        contact_z_offset = _bounded_float_param(
+            "/elmira/grasp_contact_z_offset", 0.02, -0.02, hover_z_offset
+        )
+        lift_z_offset = _bounded_float_param(
+            "/elmira/grasp_lift_z_offset", 0.12, max(0.05, hover_z_offset), 0.30
+        )
+        rospy.loginfo(
+            f"GraspRefinement: z plan table={table_z:.3f}, "
+            f"hover={table_z + hover_z_offset:.3f}, "
+            f"contact={table_z + contact_z_offset:.3f}, "
+            f"lift={table_z + lift_z_offset:.3f}"
+        )
+
         poses = []
         
         # 0. Align horizontally (keep safe height)
         hover_pose = Pose()
-        hover_pose.position = Point(refined_x, refined_y, table_z + 0.06)
+        hover_pose.position = Point(refined_x, refined_y, table_z + hover_z_offset)
         hover_pose.orientation = get_arm_orientation(is_right)
         poses.append(hover_pose)
         
-        # 1. Refined grasp pose (No downward plunge for crab claw, slide horizontally)
+        # 1. Refined grasp/contact pose. The hand closes after this pose.
         grasp_pose = Pose()
-        grasp_pose.position = Point(refined_x, refined_y, table_z + 0.06)
+        grasp_pose.position = Point(refined_x, refined_y, table_z + contact_z_offset)
         grasp_pose.orientation = get_arm_orientation(is_right)
         poses.append(grasp_pose)
         
         # 2. Lift pose (raise object straight up after grasp)
         lift_pose = Pose()
-        lift_pose.position = Point(refined_x, refined_y, table_z + 0.12)
+        lift_pose.position = Point(refined_x, refined_y, table_z + lift_z_offset)
         lift_pose.orientation = get_arm_orientation(is_right)
         poses.append(lift_pose)
         
