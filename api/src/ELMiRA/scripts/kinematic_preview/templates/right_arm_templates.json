@@ -1,0 +1,170 @@
+{
+  "version": 2,
+  "notes": "Demonstration values only. Do not send directly to real motors. These right-arm templates are preview-only and approximate.",
+  "templates": {
+    "right_arm_reset_pose": {
+      "name": "right_arm_reset_pose",
+      "description": "Coarse right-arm reset/default pose for preview only.",
+      "purpose": "show conservative reset/default pose",
+      "action_type": "reset_preview",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 20,
+        "right_shoulder_roll": 4,
+        "right_elbow_pitch": 40,
+        "right_wrist_pitch": 0
+      },
+      "hand_state": "neutral",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.10
+      },
+      "safety_note": "Preview only. No real robot motion is commanded.",
+      "real_robot_motion_commanded": false
+    },
+    "right_arm_point_red_object": {
+      "name": "right_arm_point_red_object",
+      "description": "Right arm points toward the red object using a coarse preview pose.",
+      "purpose": "point toward the red object",
+      "action_type": "point",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 48,
+        "right_shoulder_roll": -12,
+        "right_elbow_pitch": 18,
+        "right_wrist_pitch": 8
+      },
+      "hand_state": "neutral",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.10
+      },
+      "safety_note": "Preview only. No real robot motion is commanded.",
+      "real_robot_motion_commanded": false
+    },
+    "right_arm_reach_forward": {
+      "name": "right_arm_reach_forward",
+      "description": "Right arm reaches toward the object area without attempting a grasp.",
+      "purpose": "move hand toward object area, not grasp yet",
+      "action_type": "reach",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 35,
+        "right_shoulder_roll": -8,
+        "right_elbow_pitch": 35,
+        "right_wrist_pitch": 0
+      },
+      "hand_state": "open",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.10
+      },
+      "safety_note": "Preview only. No real robot motion is commanded.",
+      "real_robot_motion_commanded": false
+    },
+    "right_arm_pre_grasp": {
+      "name": "right_arm_pre_grasp",
+      "description": "Right arm moves to a coarse pre-grasp pose near the target object before closing.",
+      "purpose": "place hand near object before closing",
+      "action_type": "pre_grasp",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 25,
+        "right_shoulder_roll": -15,
+        "right_elbow_pitch": 45,
+        "right_wrist_pitch": 10
+      },
+      "hand_state": "open",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.12
+      },
+      "grasp_offset": {
+        "x": -0.04,
+        "y": 0.0,
+        "z": 0.02
+      },
+      "safety_note": "Preview only. No real robot motion is commanded.",
+      "real_robot_motion_commanded": false
+    },
+    "right_arm_grasp_attempt": {
+      "name": "right_arm_grasp_attempt",
+      "description": "Simplified preview of reaching the object area and closing the hand.",
+      "purpose": "simplified grasp attempt: reach object area and close hand",
+      "action_type": "grasp_attempt",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 22,
+        "right_shoulder_roll": -15,
+        "right_elbow_pitch": 50,
+        "right_wrist_pitch": 8
+      },
+      "hand_state": "close",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.10
+      },
+      "grasp_offset": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "safety_note": "Preview only. This is not guaranteed grasp success and no real robot motion is commanded.",
+      "real_robot_motion_commanded": false
+    },
+    "right_arm_close_hand": {
+      "name": "right_arm_close_hand",
+      "description": "Right hand close state shown without changing arm pose.",
+      "purpose": "show close-hand state only",
+      "action_type": "hand_state_preview",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 25,
+        "right_shoulder_roll": -15,
+        "right_elbow_pitch": 45,
+        "right_wrist_pitch": 10
+      },
+      "hand_state": "close",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.10
+      },
+      "safety_note": "Preview only. No real hand close command is sent.",
+      "real_robot_motion_commanded": false
+    },
+    "right_arm_lift_pose": {
+      "name": "right_arm_lift_pose",
+      "description": "Right arm lift pose after a hypothetical simplified grasp attempt.",
+      "purpose": "lift pose after a simplified grasp attempt",
+      "action_type": "lift",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 20,
+        "right_shoulder_roll": -10,
+        "right_elbow_pitch": 30,
+        "right_wrist_pitch": 5
+      },
+      "hand_state": "close",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.18
+      },
+      "safety_note": "Preview only. No real robot motion is commanded.",
+      "real_robot_motion_commanded": false
+    }
+  }
+}

@@ -6,7 +6,10 @@
     <arg name="motion_respawn_delay" default="3.0" doc="Seconds to wait before respawning Motion.py" />
     <arg name="motion_startup_retries" default="6" doc="Motion.py hardware init attempts before process exit" />
     <arg name="motion_startup_retry_delay" default="2.0" doc="Seconds between Motion.py hardware init attempts" />
-    <arg name="motion_disabled_motor_ids" default="[23, 24, 26, 28, 29, 30, 32]" doc="YAML list of motor IDs to remove from PyPot startup" />
+    <arg name="motion_disabled_motor_ids" default="[23, 24, 25, 26, 28, 29, 30, 32]" doc="YAML list of motor IDs to remove from PyPot startup" />
+    <arg name="motion_xl320_min_safe_id" default="30" doc="Lowest XL-320 hand ID allowed on /nico/motion/xl320_cmd" />
+    <arg name="motion_xl320_max_safe_id" default="60" doc="Highest XL-320 hand ID allowed on /nico/motion/xl320_cmd" />
+    <arg name="joint_command_speed" default="0.03" doc="Shared JointController setAngle speed fraction" />
     
     <!-- Derived arguments for node configuration -->
     <arg name="motion_args" value="-m $(arg json_path) --vrep" if="$(arg dummy)"/>
@@ -14,6 +17,8 @@
     <param name="/nico/motion/startupRetries" value="$(arg motion_startup_retries)"/>
     <param name="/nico/motion/startupRetryDelay" value="$(arg motion_startup_retry_delay)"/>
     <rosparam param="/nico/motion/disabledMotorIds" subst_value="true">$(arg motion_disabled_motor_ids)</rosparam>
+    <param name="/nico/motion/xl320MinSafeId" value="$(arg motion_xl320_min_safe_id)"/>
+    <param name="/nico/motion/xl320MaxSafeId" value="$(arg motion_xl320_max_safe_id)"/>
     
     <!-- Make nodes strictly required only if NOT in dummy mode (to prevent crash loops) -->
     <!-- FOR DEBUGGING: Set to false to isolate crashes -->
@@ -28,14 +33,17 @@
     <node name="joint_controller_left" pkg="nicoros" type="JointController.py" required="$(arg required_val)" output="screen">
         <env name="CUDA_VISIBLE_DEVICES" value=""/>
         <param name="prefix" type="string" value="left/open_manipulator_p" />
+        <param name="command_speed" value="$(arg joint_command_speed)" />
     </node>
 	<node name="joint_controller_right" pkg="nicoros" type="JointController.py" required="$(arg required_val)" output="screen">
         <env name="CUDA_VISIBLE_DEVICES" value=""/>
         <param name="prefix" type="string" value="right/open_manipulator_p" />
+        <param name="command_speed" value="$(arg joint_command_speed)" />
     </node>
     <node name="joint_controller_head" pkg="nicoros" type="JointController.py" required="$(arg required_val)" output="screen">
         <env name="CUDA_VISIBLE_DEVICES" value=""/>
         <param name="prefix" type="string" value="NICOL/head" />
+        <param name="command_speed" value="$(arg joint_command_speed)" />
     </node>
 
 </launch>

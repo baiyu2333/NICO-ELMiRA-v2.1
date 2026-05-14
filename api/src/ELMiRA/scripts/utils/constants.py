@@ -40,7 +40,6 @@ COMMANDABLE_JOINTS = {
         "r_shoulder_y",
         "r_arm_x",
         "r_elbow_y",
-        "r_wrist_x",
     ]),
 }
 

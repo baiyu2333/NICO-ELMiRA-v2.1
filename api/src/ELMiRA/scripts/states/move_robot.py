@@ -263,22 +263,27 @@ class MoveRobotPart(smach.Sequence):
                 if not userdata.names:
                     return False
 
-                missing = [name for name in userdata.names if name not in message.name]
+                requested = list(zip(userdata.names, userdata.positions))
+                available = [(name, pos) for name, pos in requested if name in message.name]
+                missing = [name for name, _ in requested if name not in message.name]
                 if missing:
                     rospy.logwarn(f"MoveRobotPart: Missing joints in feedback: {missing}")
+                if not available:
                     return False
 
                 joint_ids = np.argsort(message.name)
+                available_names = [name for name, _ in available]
+                available_positions = [pos for _, pos in available]
                 selected_ids = joint_ids[
-                    np.searchsorted(message.name, userdata.names, sorter=joint_ids)
+                    np.searchsorted(message.name, available_names, sorter=joint_ids)
                 ]
                 ordered_state = np.array(message.position)[selected_ids]
                 if len(message.velocity) == len(message.name):
                     ordered_velocity = np.array(message.velocity)[selected_ids]
                 else:
-                    ordered_velocity = np.zeros(len(userdata.names))
+                    ordered_velocity = np.zeros(len(available_names))
                 return not (
-                    np.allclose(userdata.positions, ordered_state, atol=0.052)  # < ~3°
+                    np.allclose(available_positions, ordered_state, atol=0.052)  # < ~3°
                     and np.all(np.abs(ordered_velocity) < 0.01)
                 )
 

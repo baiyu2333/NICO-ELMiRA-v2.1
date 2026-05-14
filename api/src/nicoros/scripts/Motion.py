@@ -57,11 +57,15 @@ class NicoRosMotion:
             # Exclude known broken/mixed-protocol hand motors from pypot startup.
             # Left hand XL-320 motors are handled through /xl320_cmd; right finger
             # ID 29 is currently overloaded/broken and should not block startup.
-            "disabledMotorIds": [23, 24, 26, 28, 29, 30, 32],
+            "disabledMotorIds": [23, 24, 25, 26, 28, 29, 30, 32],
             # The Dynamixel bus sometimes needs a second scan after USB reset or
             # after a previous Motion process releases /dev/ttyUSB0.
             "startupRetries": 6,
             "startupRetryDelay": 2.0,
+            # XL-320 hand motors must not use IDs that overlap the main MX bus.
+            # The current left hand mapping expects IDs 30,31,33-37.
+            "xl320MinSafeId": 30,
+            "xl320MaxSafeId": 60,
         }
 
     @staticmethod
@@ -114,6 +118,14 @@ class NicoRosMotion:
         if rospy.has_param(config["rostopicName"] + "/startupRetryDelay"):
             config["startupRetryDelay"] = rospy.get_param(
                 config["rostopicName"] + "/startupRetryDelay"
+            )
+        if rospy.has_param(config["rostopicName"] + "/xl320MinSafeId"):
+            config["xl320MinSafeId"] = rospy.get_param(
+                config["rostopicName"] + "/xl320MinSafeId"
+            )
+        if rospy.has_param(config["rostopicName"] + "/xl320MaxSafeId"):
+            config["xl320MaxSafeId"] = rospy.get_param(
+                config["rostopicName"] + "/xl320MaxSafeId"
             )
 
         # init Motion
@@ -241,6 +253,8 @@ class NicoRosMotion:
             self._ROSPY_xl320_cmd,
         )
         self._xl320_lock = threading.Lock()
+        self._xl320_min_safe_id = int(config.get("xl320MinSafeId", 30))
+        self._xl320_max_safe_id = int(config.get("xl320MaxSafeId", 60))
         self._palm_sensor_warned = set()
 
         # setup services
@@ -443,8 +457,23 @@ class NicoRosMotion:
         :param message: ROS message
         :type message: nicomsg.msg.sff
         """
-        self.fakeJointStates[message.param1] = message.param2
-        self.robot.setAngle(message.param1, message.param2, message.param3)
+        self.logger.info(
+            "setAngle command: %s -> %.2f deg at speed %.3f",
+            message.param1,
+            message.param2,
+            message.param3,
+        )
+        try:
+            self.fakeJointStates[message.param1] = message.param2
+            self.robot.setAngle(message.param1, message.param2, message.param3)
+        except Exception as exc:
+            self.logger.error(
+                "setAngle failed for %s -> %.2f deg at speed %.3f: %s",
+                message.param1,
+                message.param2,
+                message.param3,
+                exc,
+            )
 
     def _ROSPY_changeAngle(self, message):
         """
@@ -703,6 +732,15 @@ class NicoRosMotion:
         motor_id = int(message.param1)
         register = int(message.param2)
         value = int(message.param3)
+        if not (self._xl320_min_safe_id <= motor_id <= self._xl320_max_safe_id):
+            self.logger.error(
+                "Refusing XL-320 command to unsafe id=%s; safe range is [%s, %s]. "
+                "Reprogram the hand IDs or adjust /nico/motion/xl320MinSafeId only after verifying no ID collision.",
+                motor_id,
+                self._xl320_min_safe_id,
+                self._xl320_max_safe_id,
+            )
+            return
         
         # Determine data size from register
         # Register 24 = Torque Enable (1 byte)
