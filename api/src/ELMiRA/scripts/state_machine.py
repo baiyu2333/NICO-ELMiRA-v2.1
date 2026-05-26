@@ -443,22 +443,36 @@ def main():
                     {"succeeded": "CHECK_GRASP_REFINE"},
                 )
                 
-                # Check if this was a grasp action that needs visual servoing refinement
+                # Check if this was a grasp action. For the current physical
+                # NICO setup, default to one conservative grasp attempt; repeated
+                # visual correction can over-adjust a good first pose.
                 @smach.cb_interface(
                     input_keys=["action_type"],
-                    outcomes=["needs_refinement", "done"],
+                    output_keys=["camera_eye", "close_hand"],
+                    outcomes=["single_attempt", "needs_refinement", "done"],
                 )
                 def check_grasp_refine_cb(userdata):
                     action = str(userdata.action_type).lower()
                     if action in ["grasp", "grab", "pick", "take"]:
-                        rospy.loginfo("Grasp detected: Starting multi-stage visual servoing refinement")
-                        return "needs_refinement"
+                        if bool(rospy.get_param("/elmira/grasp_multi_stage_refinement", False)):
+                            rospy.loginfo(
+                                "Grasp detected: Starting multi-stage visual servoing refinement"
+                            )
+                            return "needs_refinement"
+                        userdata.camera_eye = rospy.get_param("/elmira/default_refine_eye", "left")
+                        userdata.close_hand = True
+                        rospy.loginfo(
+                            "Grasp detected: Using single conservative grasp attempt "
+                            "(multi-stage refinement disabled)"
+                        )
+                        return "single_attempt"
                     return "done"
                 
                 smach.StateMachine.add(
                     "CHECK_GRASP_REFINE",
                     smach.CBState(check_grasp_refine_cb),
                     {
+                        "single_attempt": "GRASP_REFINEMENT_STAGE3",
                         "needs_refinement": "PREPARE_STAGE2",
                         "done": "next_action",
                     },

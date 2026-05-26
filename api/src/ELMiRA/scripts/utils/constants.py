@@ -5,10 +5,15 @@ arm orientations, and hardware configuration.
 
 from geometry_msgs.msg import Quaternion
 
+try:
+    import rospy
+except Exception:  # pragma: no cover - allows offline preview/compile contexts
+    rospy = None
+
 # ─── Robot Hardware Status ────────────────────────────────────────────
 # The new left hand is controlled outside the main pypot motor config because
 # it uses XL-320/SEED protocol. Keep only Protocol 1.0 joints in arm movement.
-LEFT_HAND_FUNCTIONAL = True  # New XL-320 4-finger hand installed
+LEFT_HAND_FUNCTIONAL = False  # Left gripper is unreliable; keep execution on right hand.
 
 # Actions that require a working hand (grasp/close/open)
 HAND_REQUIRED_ACTIONS = frozenset([
@@ -29,9 +34,11 @@ PALM_SENSOR_AVAILABLE = {
 def palm_sensor_available(side: str) -> bool:
     return PALM_SENSOR_AVAILABLE.get(str(side).lower(), False)
 
-# Joints that can be commanded through /nico/motion/setAngle with the current
-# nico_humanoid_upper_fixed_usb0.json motor file. Left wrist/finger XL-320
-# joints are commanded separately via /nico/motion/xl320_cmd.
+# Joints that can be commanded through /nico/motion/setAngle when the
+# corresponding motors are enabled in the active PyPot config. The current
+# swapped physical right hand is controlled separately via XL-320 IDs 31/33/34-37,
+# so r_wrist_z/r_wrist_x only represent the old SR-SEED wrist if IDs 23/25 are
+# actually enabled at Motion.py startup.
 COMMANDABLE_JOINTS = {
     "head": frozenset(["head_z", "head_y"]),
     "l_arm": frozenset(["l_shoulder_z", "l_shoulder_y", "l_arm_x", "l_elbow_y"]),
@@ -40,8 +47,39 @@ COMMANDABLE_JOINTS = {
         "r_shoulder_y",
         "r_arm_x",
         "r_elbow_y",
+        "r_wrist_z",
+        "r_wrist_x",
     ]),
 }
+
+JOINT_MOTOR_IDS = {
+    "r_wrist_z": 23,
+    "r_wrist_x": 25,
+    "r_indexfingers_x": 29,
+}
+
+
+def _runtime_disabled_motor_ids():
+    """Return Motion.py disabled motor IDs if ROS params are available."""
+    if rospy is None:
+        return set()
+    try:
+        if rospy.has_param("/nico/motion/disabledMotorIds"):
+            raw = rospy.get_param("/nico/motion/disabledMotorIds")
+        else:
+            raw = []
+    except Exception:
+        return set()
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        import re
+
+        return {int(match) for match in re.findall(r"-?\d+", raw)}
+    try:
+        return {int(item) for item in raw}
+    except Exception:
+        return set()
 
 
 def filter_commandable_joints(group: str, names, positions):
@@ -49,12 +87,14 @@ def filter_commandable_joints(group: str, names, positions):
     allowed = COMMANDABLE_JOINTS.get(group)
     if allowed is None:
         return list(names), list(positions), []
+    disabled_ids = _runtime_disabled_motor_ids()
 
     filtered_names = []
     filtered_positions = []
     dropped = []
     for name, position in zip(names, positions):
-        if name in allowed:
+        motor_id = JOINT_MOTOR_IDS.get(name)
+        if name in allowed and (motor_id is None or motor_id not in disabled_ids):
             filtered_names.append(name)
             filtered_positions.append(position)
         else:
@@ -119,6 +159,11 @@ ARM_ORIENTATION_LEFT = Quaternion(0.7071068, 0, 0, 0.7071068)
 POINT_ORIENTATION_RIGHT = Quaternion(-1.0, 0, 0, 0.0)
 POINT_ORIENTATION_LEFT = Quaternion(1.0, 0, 0, 0.0)
 
+# Touch orientation — use the forward/down end-effector attitude so the wrist
+# does not lift into an upward check-mark shape for table-object contact.
+TOUCH_ORIENTATION_RIGHT = POINT_ORIENTATION_RIGHT
+TOUCH_ORIENTATION_LEFT = POINT_ORIENTATION_LEFT
+
 
 def get_arm_orientation(is_right: bool) -> Quaternion:
     """Get the standard manipulation orientation for the given arm."""
@@ -128,6 +173,21 @@ def get_arm_orientation(is_right: bool) -> Quaternion:
 def get_point_orientation(is_right: bool) -> Quaternion:
     """Get the pointing orientation for the given arm."""
     return POINT_ORIENTATION_RIGHT if is_right else POINT_ORIENTATION_LEFT
+
+
+def get_touch_orientation(is_right: bool) -> Quaternion:
+    """Get a downward/right-hand touch orientation for table-object contact."""
+    return TOUCH_ORIENTATION_RIGHT if is_right else TOUCH_ORIENTATION_LEFT
+
+
+def get_pre_grasp_orientation(is_right: bool) -> Quaternion:
+    """Get a conservative pre-grasp orientation before hand close."""
+    return get_touch_orientation(is_right) if is_right else get_arm_orientation(is_right)
+
+
+def get_grasp_orientation(is_right: bool) -> Quaternion:
+    """Get the final grasp/contact orientation."""
+    return get_touch_orientation(is_right) if is_right else get_arm_orientation(is_right)
 
 
 # ─── ROS Service Names (v2 only) ─────────────────────────────────────

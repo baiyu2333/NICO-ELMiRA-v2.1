@@ -16,7 +16,10 @@ from utils.constants import (
     HAND_REQUIRED_ACTIONS,
     clamp_to_workspace,
     get_arm_orientation,
+    get_grasp_orientation,
     get_point_orientation,
+    get_pre_grasp_orientation,
+    get_touch_orientation,
     LLM_DETECT_SERVICE,
     LLM_VISIBILITY_SERVICE,
 )
@@ -124,6 +127,7 @@ class ActionTrajectory(smach.State):
 
     def execute(self, userdata):
         action_lower = str(userdata.action_type).lower()
+        is_grasp_action = action_lower in ["grasp", "grab", "pick", "take"]
         requested_hand = getattr(userdata, "requested_hand", None)
         
         if requested_hand in ("left", "right"):
@@ -178,6 +182,17 @@ class ActionTrajectory(smach.State):
                 f"r_shoulder_z limit is ±0.8rad — lateral reach is limited."
             )
         target_z = userdata.target_z
+        base_target_z = target_z
+        if action_lower == "touch" and is_right:
+            touch_z_offset = float(rospy.get_param("/elmira/right_touch_z_offset", 0.0))
+            table_z_min = float(rospy.get_param("/elmira/table_z_min", 0.45))
+            table_z_max = float(rospy.get_param("/elmira/table_z_max", 0.85))
+            target_z = max(table_z_min, min(table_z_max, target_z + touch_z_offset))
+            rospy.loginfo(
+                "ActionTrajectory: right touch z adjusted "
+                f"base_z={base_target_z:.3f}, offset={touch_z_offset:.3f}, "
+                f"target_z={target_z:.3f}"
+            )
         
         rospy.loginfo(
             f"ActionTrajectory: action={action_lower}, "
@@ -190,7 +205,7 @@ class ActionTrajectory(smach.State):
         if action_lower == "touch":
             target_pose = Pose()
             target_pose.position = Point(target_x, target_y, target_z)
-            target_pose.orientation = get_arm_orientation(is_right)
+            target_pose.orientation = get_touch_orientation(is_right)
             target_poses.append(target_pose)
         elif action_lower == "show":
             target_pose = Pose()
@@ -215,19 +230,49 @@ class ActionTrajectory(smach.State):
                 target_pose.position = Point(target_x + offset[0], target_y + offset[1], target_z + offset[2])
                 target_pose.orientation = get_arm_orientation(is_right)
                 target_poses.append(target_pose)
-        elif action_lower == "grasp":
-            # For grasping, first swing high to avoid knocking over objects
-            swing_pose = Pose()
-            swing_pose.position = Point(target_x, target_y, target_z + 0.06)
-            swing_pose.orientation = get_arm_orientation(is_right)
-            target_poses.append(swing_pose)
-            
-            # Hover directly above
-            hover_pose = Pose()
-            hover_pose.position = Point(target_x, target_y, target_z + 0.06)
-            hover_pose.orientation = get_arm_orientation(is_right)
-            target_poses.append(hover_pose)
-            
+        elif is_grasp_action:
+            table_z_min = float(rospy.get_param("/elmira/table_z_min", 0.45))
+            table_z_max = float(rospy.get_param("/elmira/table_z_max", 0.85))
+            hover_z_offset = max(
+                0.04,
+                min(0.12, float(rospy.get_param("/elmira/grasp_hover_z_offset", 0.06))),
+            )
+            pre_grasp_backoff = max(
+                0.00,
+                min(0.08, float(rospy.get_param("/elmira/grasp_pre_grasp_x_backoff", 0.035))),
+            )
+            approach_backoff = max(
+                0.00,
+                min(0.05, float(rospy.get_param("/elmira/grasp_approach_x_backoff", 0.015))),
+            )
+            pre_grasp_z = max(table_z_min, min(table_z_max, target_z + hover_z_offset + 0.03))
+            approach_z = max(table_z_min, min(table_z_max, target_z + hover_z_offset))
+            pre_grasp_orientation = get_pre_grasp_orientation(is_right)
+            grasp_orientation = get_grasp_orientation(is_right)
+
+            # Stage 1: move to a conservative pre-grasp pose with the right hand
+            # already opened/aligned by the inline hand action below.
+            pre_grasp_pose = Pose()
+            pre_grasp_pose.position = Point(
+                max(0.10, target_x - pre_grasp_backoff),
+                target_y,
+                pre_grasp_z,
+            )
+            pre_grasp_pose.orientation = pre_grasp_orientation
+            target_poses.append(pre_grasp_pose)
+
+            # Stage 2: small approach near the object. The final close/lift is
+            # handled by GraspRefinement so the robot does not keep refining away
+            # from a good first pose.
+            approach_pose = Pose()
+            approach_pose.position = Point(
+                max(0.10, target_x - approach_backoff),
+                target_y,
+                approach_z,
+            )
+            approach_pose.orientation = grasp_orientation
+            target_poses.append(approach_pose)
+
             userdata.hand_action = None
             
         elif action_lower == "place":
@@ -378,6 +423,16 @@ class ActionPlanner(smach.StateMachine):
                     
                     action = str(userdata.action_type).lower()
                     # Grasp no longer embeds hand_action here - handled by GraspRefinement
+                    if action == "touch" and userdata.planning_group == "r_arm" and i == 0:
+                        step["hand_action"] = "touch_wrist"
+                        step["planning_group"] = userdata.planning_group
+
+                    if action in ["grasp", "grab", "pick", "take"] and userdata.planning_group == "r_arm":
+                        step["planning_group"] = userdata.planning_group
+                        if i == 0:
+                            step["hand_action"] = "open"
+                        elif i == len(response.positions) - 1:
+                            step["hand_action"] = "touch_wrist"
                         
                     if action in ["place", "drop", "release", "open"] and i == 1:
                         step["hand_action"] = "open"
@@ -390,7 +445,15 @@ class ActionPlanner(smach.StateMachine):
                     # For grasp: don't append init pose - refinement state handles conclusion
                     userdata.joint_trajectory = trajectory
                 else:
-                    userdata.joint_trajectory = trajectory + [userdata.motion_init_pose]
+                    # Reset only the active arm. Appending the full init pose also
+                    # commands the opposite arm, which is unsafe during right-arm
+                    # touch/reach tuning on the swapped-hand setup.
+                    reset_pose = {}
+                    if "head" in userdata.motion_init_pose:
+                        reset_pose["head"] = userdata.motion_init_pose["head"]
+                    if userdata.planning_group in userdata.motion_init_pose:
+                        reset_pose[userdata.planning_group] = userdata.motion_init_pose[userdata.planning_group]
+                    userdata.joint_trajectory = trajectory + [reset_pose]
                 return "succeeded"
 
             # IK Solver

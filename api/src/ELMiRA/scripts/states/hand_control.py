@@ -159,6 +159,21 @@ class HandControl(smach.State):
     LEFT_HAND_OPEN_POS = -150.0    # All fingers fully open
     LEFT_HAND_CLOSE_POS = 60.0     # All fingers closed for grasping
 
+    # Current lab hardware has the old XL-320 left hand mounted as the
+    # physical right hand. Keep these values param-driven so they can be
+    # changed from the launch file without touching code.
+    # ID 31: forearm rotation; ID 33: wrist pitch.
+    # Fingers: 34 thumb base, 35 thumb MCP/IP, 36 index,
+    # 37 middle and ring together.
+    RIGHT_XL320_FINGER_IDS = [34, 35, 36, 37]
+    RIGHT_XL320_WRIST_Z_ID = 31
+    RIGHT_XL320_WRIST_X_ID = 33
+    RIGHT_TOUCH_WRIST_Z_DEG = 80.0
+    RIGHT_TOUCH_WRIST_X_DEG = -45.0
+    RIGHT_TOUCH_HOLD_SEC = 2.0
+    RIGHT_HAND_OPEN_POS = -150.0
+    RIGHT_HAND_CLOSE_POS = 60.0
+
     @staticmethod
     def _parse_int_list(value, default):
         if value is None:
@@ -168,6 +183,19 @@ class HandControl(smach.State):
         else:
             parsed = [int(item) for item in value]
         return parsed or list(default)
+
+    @staticmethod
+    def _parse_bool(value, default=False):
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def _deg_to_xl320_raw(deg: float) -> int:
+        raw = int((float(deg) + 150.0) / 300.0 * 1023.0)
+        return max(0, min(1023, raw))
     
     def __init__(self):
         smach.State.__init__(
@@ -218,9 +246,54 @@ class HandControl(smach.State):
             self._left_hand_open_pos,
             self._left_hand_close_pos,
         )
+
+        self._refresh_right_xl320_params()
+        rospy.loginfo(
+            "HandControl: swapped right XL-320 enabled=%s wrist_touch=%s fingers=%s open=%.1f close=%.1f hold=%.1fs",
+            self._use_swapped_right_xl320_hand,
+            self._right_touch_wrist_positions,
+            self._right_finger_ids,
+            self._right_hand_open_pos,
+            self._right_hand_close_pos,
+            self._right_touch_hold_sec,
+        )
         
         # Palm sensor monitor
         self._palm = get_palm_monitor()
+
+    def _refresh_right_xl320_params(self):
+        """Reload current physical right-hand XL-320 params from ROS."""
+        self._use_swapped_right_xl320_hand = self._parse_bool(
+            rospy.get_param("/elmira/use_swapped_right_xl320_hand", True),
+            True,
+        )
+        self._right_finger_ids = self._parse_int_list(
+            rospy.get_param("/elmira/right_xl320_finger_ids", self.RIGHT_XL320_FINGER_IDS),
+            self.RIGHT_XL320_FINGER_IDS,
+        )
+        self._right_wrist_z_id = int(
+            rospy.get_param("/elmira/right_xl320_wrist_z_id", self.RIGHT_XL320_WRIST_Z_ID)
+        )
+        self._right_wrist_x_id = int(
+            rospy.get_param("/elmira/right_xl320_wrist_x_id", self.RIGHT_XL320_WRIST_X_ID)
+        )
+        self._right_hand_open_pos = float(
+            rospy.get_param("/elmira/right_hand_open_deg", self.RIGHT_HAND_OPEN_POS)
+        )
+        self._right_hand_close_pos = float(
+            rospy.get_param("/elmira/right_hand_close_deg", self.RIGHT_HAND_CLOSE_POS)
+        )
+        self._right_touch_hold_sec = float(
+            rospy.get_param("/elmira/right_touch_hold_sec", self.RIGHT_TOUCH_HOLD_SEC)
+        )
+        self._right_touch_wrist_positions = {
+            self._right_wrist_z_id: float(
+                rospy.get_param("/elmira/right_touch_wrist_z_deg", self.RIGHT_TOUCH_WRIST_Z_DEG)
+            ),
+            self._right_wrist_x_id: float(
+                rospy.get_param("/elmira/right_touch_wrist_x_deg", self.RIGHT_TOUCH_WRIST_X_DEG)
+            ),
+        }
     
     def _get_hand_side(self, planning_group: str) -> str:
         """Determine hand side from planning group."""
@@ -236,6 +309,9 @@ class HandControl(smach.State):
         """Send direct motor commands for the hand."""
         if side == "left":
             self._move_left_hand_xl320(action)
+            return
+        if side == "right" and self._use_swapped_right_xl320_hand:
+            self._move_right_hand_xl320(action)
             return
             
         positions = self.RIGHT_HAND_OPEN if action == "open" else self.RIGHT_HAND_CLOSE
@@ -304,6 +380,61 @@ class HandControl(smach.State):
             )
         except Exception as e:
             rospy.logerr(f"HandControl: XL-320 left hand {action} error: {e}")
+
+    def _move_right_hand_xl320(self, action: str):
+        """Control the swapped physical right hand via XL-320 Protocol 2.0."""
+        self._refresh_right_xl320_params()
+        target_pos = (
+            self._right_hand_open_pos if action == "open" else self._right_hand_close_pos
+        )
+        raw_pos = self._deg_to_xl320_raw(target_pos)
+
+        try:
+            rospy.loginfo(f"HandControl: XL-320 swapped right hand {action} via ROS topic...")
+            all_motor_ids = sorted(
+                set(list(self._right_touch_wrist_positions.keys()) + self._right_finger_ids)
+            )
+            for motor_id in all_motor_ids:
+                self._send_xl320_cmd(motor_id, 24, 1)
+                rospy.sleep(0.005)
+            for motor_id in all_motor_ids:
+                self._send_xl320_cmd(motor_id, 32, 150)
+                rospy.sleep(0.005)
+            self._align_right_touch_wrist_xl320()
+            for motor_id in self._right_finger_ids:
+                self._send_xl320_cmd(motor_id, 30, raw_pos)
+                rospy.sleep(0.005)
+            rospy.loginfo(
+                f"HandControl: XL-320 swapped right hand {action} -> "
+                f"fingers {self._right_finger_ids} to {target_pos} deg (raw={raw_pos})"
+            )
+        except Exception as e:
+            rospy.logerr(f"HandControl: XL-320 swapped right hand {action} error: {e}")
+
+    def _align_right_touch_wrist_xl320(self):
+        """Align swapped physical right wrist downward for table-object touch."""
+        self._refresh_right_xl320_params()
+        if not self._use_swapped_right_xl320_hand:
+            rospy.loginfo("HandControl: swapped right XL-320 hand disabled; skipping touch wrist alignment")
+            return
+        all_motor_ids = sorted(self._right_touch_wrist_positions.keys())
+        for motor_id in all_motor_ids:
+            self._send_xl320_cmd(motor_id, 24, 1)
+            rospy.sleep(0.005)
+        for motor_id in all_motor_ids:
+            self._send_xl320_cmd(motor_id, 32, 120)
+            rospy.sleep(0.005)
+        commanded = {}
+        for wrist_id, wrist_deg in self._right_touch_wrist_positions.items():
+            raw_wrist = self._deg_to_xl320_raw(wrist_deg)
+            self._send_xl320_cmd(wrist_id, 30, raw_wrist)
+            commanded[wrist_id] = {"deg": wrist_deg, "raw": raw_wrist}
+            rospy.sleep(0.005)
+        rospy.loginfo(
+            "HandControl: swapped right wrist touch alignment %s hold=%.1fs",
+            commanded,
+            self._right_touch_hold_sec,
+        )
     
     def _send_xl320_cmd(self, motor_id: int, register: int, value: int):
         """Send a single XL-320 command via the Motion node's ROS topic."""
@@ -370,7 +501,7 @@ class HandControl(smach.State):
             rospy.logdebug("HandControl: No hand action requested")
             return "no_action"
         
-        if hand_action not in ("open", "close"):
+        if hand_action not in ("open", "close", "touch_wrist"):
             rospy.logwarn(f"HandControl: Unknown hand action '{hand_action}'")
             return "no_action"
         
@@ -384,7 +515,15 @@ class HandControl(smach.State):
         rospy.loginfo(f"HandControl: {hand_action} {side} hand")
         
         try:
-            if hand_action == "open":
+            if hand_action == "touch_wrist":
+                if side == "right":
+                    self._align_right_touch_wrist_xl320()
+                    rospy.sleep(max(0.0, self._right_touch_hold_sec))
+                    success = True
+                else:
+                    rospy.loginfo("HandControl: touch_wrist is only configured for the current right hand")
+                    success = True
+            elif hand_action == "open":
                 success = self._open_hand(side)
             else:
                 success = self._close_hand(side, verify_grasp=True)

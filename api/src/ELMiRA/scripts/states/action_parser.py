@@ -42,6 +42,25 @@ def _infer_requested_hand_from_prompt(prompt):
     return None
 
 
+def _normalize_action_type(action_type, prompt):
+    """Keep common user wording deterministic before the LLM action reaches motion."""
+    action_text = str(action_type or "").strip().lower()
+    prompt_text = str(prompt or "").strip().lower()
+
+    if "touch" in prompt_text:
+        return "touch"
+    if "point" in prompt_text or "show" in prompt_text:
+        return "show"
+
+    aliases = {
+        "point": "show",
+        "point_to": "show",
+        "show": "show",
+        "touch": "touch",
+    }
+    return aliases.get(action_text, action_text)
+
+
 class ActionParser(smach.State):
     def __init__(self):
         # Your state initialization goes here
@@ -77,7 +96,13 @@ class ActionParser(smach.State):
             )
             original_prompt = getattr(userdata, "llm_input", "")
             userdata.llm_input = f"{next_action['object']}"
-            userdata.action_type = next_action["type"]
+            action_type = _normalize_action_type(next_action.get("type"), original_prompt)
+            if action_type != str(next_action.get("type", "")).strip().lower():
+                rospy.logwarn(
+                    "ActionParser: Normalized action type "
+                    f"{next_action.get('type')} -> {action_type} from prompt '{original_prompt}'"
+                )
+            userdata.action_type = action_type
             userdata.target_object = [next_action["object"]]
             requested_hand = _normalize_requested_hand(
                 next_action.get("hand", next_action.get("side", next_action.get("arm")))

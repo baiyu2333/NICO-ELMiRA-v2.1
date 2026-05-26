@@ -31,25 +31,39 @@
     <arg name="motion_respawn_delay" default="3.0" doc="Seconds to wait before respawning Motion.py"/>
     <arg name="motion_startup_retries" default="6" doc="Motion.py hardware init attempts before process exit"/>
     <arg name="motion_startup_retry_delay" default="2.0" doc="Seconds between Motion.py hardware init attempts"/>
-    <arg name="motion_disabled_motor_ids" default="[23, 24, 25, 26, 28, 29, 30, 32]" doc="YAML list of motor IDs to remove from PyPot startup"/>
+    <arg name="motion_disabled_motor_ids" default="[23, 24, 25, 26, 28, 29, 30, 32]" doc="YAML list of motor IDs to remove from PyPot startup. IDs 23/25 are disabled by default because the SR wrist can block Motion.py boot if unavailable."/>
     <arg name="motion_xl320_min_safe_id" default="30" doc="Lowest XL-320 hand ID allowed on /nico/motion/xl320_cmd"/>
     <arg name="motion_xl320_max_safe_id" default="60" doc="Highest XL-320 hand ID allowed on /nico/motion/xl320_cmd"/>
     <arg name="joint_command_speed" default="0.03" doc="JointController setAngle speed fraction; raise only for testing"/>
     <arg name="left_wrist_z_deg" default="80.0" doc="Left XL-320 forearm rotation for palm-facing grasp"/>
     <arg name="left_wrist_x_deg" default="0.0" doc="Left XL-320 wrist flex for palm-facing grasp"/>
     <arg name="left_xl320_wrist_z_id" default="30" doc="Left XL-320 wrist/forearm rotation motor ID"/>
-    <arg name="left_xl320_wrist_x_id" default="31" doc="Left XL-320 wrist flex motor ID"/>
-    <arg name="left_xl320_finger_ids" default="[33, 34, 35, 36, 37]" doc="YAML list of left XL-320 finger motor IDs"/>
+    <arg name="left_xl320_wrist_x_id" default="32" doc="Left XL-320 wrist flex motor ID; kept away from current right-hand ID 31"/>
+    <arg name="left_xl320_finger_ids" default="[]" doc="Left XL-320 finger motor IDs disabled while left gripper is unreliable"/>
     <arg name="left_hand_open_deg" default="-150.0" doc="Left XL-320 finger open target in degrees"/>
     <arg name="left_hand_close_deg" default="60.0" doc="Left XL-320 finger close target in degrees"/>
+    <arg name="use_swapped_right_xl320_hand" default="true" doc="Use old left XL-320 hand IDs as the current physical right hand"/>
+    <arg name="right_xl320_wrist_z_id" default="31" doc="Current physical right hand XL-320 forearm rotation motor ID"/>
+    <arg name="right_xl320_wrist_x_id" default="33" doc="Current physical right hand XL-320 wrist pitch motor ID"/>
+    <arg name="right_xl320_finger_ids" default="[34, 35, 36, 37]" doc="YAML list of current physical right hand XL-320 finger motor IDs: 34 thumb base, 35 thumb MCP/IP, 36 index, 37 middle/ring"/>
+    <arg name="right_touch_wrist_z_deg" default="80.0" doc="XL-320 wrist rotation for current physical right hand touch alignment"/>
+    <arg name="right_touch_wrist_x_deg" default="-45.0" doc="XL-320 wrist flex for downward touch alignment"/>
+    <arg name="right_touch_hold_sec" default="2.0" doc="Seconds to hold touch pose after wrist alignment before returning to safe pose"/>
+    <arg name="right_touch_z_offset" default="-0.075" doc="Touch-only Z adjustment in robot frame. Negative lowers the right-hand touch target."/>
+    <arg name="right_hand_open_deg" default="-150.0" doc="Current physical right hand XL-320 finger open target in degrees"/>
+    <arg name="right_hand_close_deg" default="60.0" doc="Current physical right hand XL-320 finger close target in degrees"/>
     <arg name="move_wait_max_checks" default="350" doc="Max joint-state checks per movement wait; 50 Hz feedback means 350 is about 7 seconds"/>
     <arg name="table_z_base" default="0.7" doc="Nominal table/object grasp height in robot frame before offset_z"/>
     <arg name="table_z_min" default="0.45" doc="Safety minimum for calibrated table_z"/>
     <arg name="table_z_max" default="0.85" doc="Safety maximum for calibrated table_z"/>
     <arg name="grasp_hover_z_offset" default="0.06" doc="Height above table_z for refined grasp hover pose"/>
-    <arg name="grasp_contact_z_offset" default="0.02" doc="Height above table_z for refined grasp/contact pose where hand closes"/>
+    <arg name="grasp_contact_z_offset" default="-0.075" doc="Height offset from table_z for right-hand grasp/contact pose; aligned with tuned touch height"/>
     <arg name="grasp_lift_z_offset" default="0.12" doc="Height above table_z for post-grasp lift pose"/>
-    <arg name="refinement_mode" default="mllm" doc="Grasp refinement mode: mllm, njf, or hybrid"/>
+    <arg name="grasp_pre_grasp_x_backoff" default="0.035" doc="Conservative X backoff before final right-hand grasp approach"/>
+    <arg name="grasp_approach_x_backoff" default="0.015" doc="Small X backoff for final approach before hand close/lift"/>
+    <arg name="refinement_mode" default="none" doc="Grasp refinement mode: none, mllm, njf, or hybrid"/>
+    <arg name="grasp_use_touch_orientation" default="true" doc="Use the tuned right-hand touch orientation for table-object grasp attempts"/>
+    <arg name="grasp_multi_stage_refinement" default="false" doc="Enable repeated visual refinement stages for grasp. Default false for stable physical testing."/>
     <arg name="njf_max_correction_m" default="0.025" doc="Max per-step NJF-inspired correction in meters"/>
     <arg name="njf_max_joint_delta" default="0.08" doc="Max NJF-inspired joint delta in radians"/>
     <arg name="njf_target_error_threshold" default="0.005" doc="Metric error threshold below which correction is zero"/>
@@ -165,7 +179,7 @@
     </node>
     
     <!-- Set global params for state machine -->
-    <arg name="offset_z" default="0.0" doc="Calibration offset for Z axis (meters)"/>
+    <arg name="offset_z" default="0.03" doc="Calibration offset for Z axis (meters); tuned for right-hand touch trials"/>
     <param name="/elmira/table_z_base" value="$(arg table_z_base)"/>
     <param name="/elmira/offset_z" value="$(arg offset_z)"/>
     <param name="/elmira/table_z_min" value="$(arg table_z_min)"/>
@@ -177,11 +191,25 @@
     <rosparam param="/elmira/left_xl320_finger_ids" subst_value="true">$(arg left_xl320_finger_ids)</rosparam>
     <param name="/elmira/left_hand_open_deg" value="$(arg left_hand_open_deg)"/>
     <param name="/elmira/left_hand_close_deg" value="$(arg left_hand_close_deg)"/>
+    <param name="/elmira/use_swapped_right_xl320_hand" value="$(arg use_swapped_right_xl320_hand)"/>
+    <param name="/elmira/right_xl320_wrist_z_id" value="$(arg right_xl320_wrist_z_id)"/>
+    <param name="/elmira/right_xl320_wrist_x_id" value="$(arg right_xl320_wrist_x_id)"/>
+    <rosparam param="/elmira/right_xl320_finger_ids" subst_value="true">$(arg right_xl320_finger_ids)</rosparam>
+    <param name="/elmira/right_touch_wrist_z_deg" value="$(arg right_touch_wrist_z_deg)"/>
+    <param name="/elmira/right_touch_wrist_x_deg" value="$(arg right_touch_wrist_x_deg)"/>
+    <param name="/elmira/right_touch_hold_sec" value="$(arg right_touch_hold_sec)"/>
+    <param name="/elmira/right_touch_z_offset" value="$(arg right_touch_z_offset)"/>
+    <param name="/elmira/right_hand_open_deg" value="$(arg right_hand_open_deg)"/>
+    <param name="/elmira/right_hand_close_deg" value="$(arg right_hand_close_deg)"/>
     <param name="/elmira/move_wait_max_checks" value="$(arg move_wait_max_checks)"/>
     <param name="/elmira/grasp_hover_z_offset" value="$(arg grasp_hover_z_offset)"/>
     <param name="/elmira/grasp_contact_z_offset" value="$(arg grasp_contact_z_offset)"/>
     <param name="/elmira/grasp_lift_z_offset" value="$(arg grasp_lift_z_offset)"/>
+    <param name="/elmira/grasp_pre_grasp_x_backoff" value="$(arg grasp_pre_grasp_x_backoff)"/>
+    <param name="/elmira/grasp_approach_x_backoff" value="$(arg grasp_approach_x_backoff)"/>
     <param name="/elmira/refinement_mode" value="$(arg refinement_mode)"/>
+    <param name="/elmira/grasp_use_touch_orientation" value="$(arg grasp_use_touch_orientation)"/>
+    <param name="/elmira/grasp_multi_stage_refinement" value="$(arg grasp_multi_stage_refinement)"/>
     <param name="/elmira/default_refine_eye" value="left"/>
     <param name="/elmira/max_refinement_correction_m" value="0.05"/>
     <param name="/elmira/hybrid_njf_error_scale" value="$(arg hybrid_njf_error_scale)"/>

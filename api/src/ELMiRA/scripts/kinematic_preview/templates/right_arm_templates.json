@@ -165,6 +165,196 @@
       },
       "safety_note": "Preview only. No real robot motion is commanded.",
       "real_robot_motion_commanded": false
+    },
+    "right_arm_touch_forward": {
+      "name": "right_arm_touch_forward",
+      "description": "Preview a forward touch approach that keeps the hand aimed toward the object instead of lifting upward.",
+      "purpose": "touch the object from the front with a conservative forward approach",
+      "action_type": "touch",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 42,
+        "right_shoulder_roll": -10,
+        "right_elbow_pitch": 24,
+        "right_wrist_pitch": -18
+      },
+      "hand_state": "neutral",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.13
+      },
+      "touch_offset": {
+        "x": -0.02,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "orientation_note": "Experimental touch-forward preview. Existing robot execution may still be limited by commandable shoulder/elbow joints.",
+      "safety_note": "Preview first. Do not execute on the real robot unless supervised and safety is confirmed.",
+      "real_robot_motion_commanded": false,
+      "execution_enabled_by_default": false
+    },
+    "right_arm_touch_side": {
+      "name": "right_arm_touch_side",
+      "description": "Preview a side-touch approach intended to contact the object from the robot-right side rather than from above.",
+      "purpose": "touch the object from the side to reduce table collision risk",
+      "action_type": "touch",
+      "arm_used": "right",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 36,
+        "right_shoulder_roll": -22,
+        "right_elbow_pitch": 28,
+        "right_wrist_pitch": -12
+      },
+      "hand_state": "neutral",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.12,
+        "z": 0.13
+      },
+      "touch_offset": {
+        "x": 0.0,
+        "y": -0.03,
+        "z": 0.0
+      },
+      "orientation_note": "Experimental side-touch preview. It avoids a top-down contact assumption and should be validated slowly.",
+      "safety_note": "Preview first. Do not execute on the real robot unless supervised and safety is confirmed.",
+      "real_robot_motion_commanded": false,
+      "execution_enabled_by_default": false
+    },
+    "right_arm_pre_grasp_side": {
+      "name": "right_arm_pre_grasp_side",
+      "description": "Preview a side pre-grasp pose with the hand opened and angled toward the object.",
+      "purpose": "prepare for a conservative side grasp near the red object",
+      "action_type": "pre_grasp",
+      "arm_used": "right",
+      "stage_name": "pre_grasp_side",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 34,
+        "right_shoulder_roll": -18,
+        "right_elbow_pitch": 32,
+        "right_wrist_pitch": -16
+      },
+      "joint_names": [
+        "r_shoulder_z",
+        "r_shoulder_y",
+        "r_arm_x",
+        "r_elbow_y",
+        "r_wrist_z",
+        "r_wrist_x"
+      ],
+      "hand_state": "open",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.15
+      },
+      "wrist_forearm_orientation_note": "Preview assumes the physical right XL-320 wrist is aligned downward before final close.",
+      "safety_note": "Preview first. No real robot motion is commanded by this template.",
+      "real_robot_motion_commanded": false,
+      "execution_enabled_by_default": false
+    },
+    "right_arm_touch_downward": {
+      "name": "right_arm_touch_downward",
+      "description": "Preview a downward wrist touch pose without lowering the whole arm into the table.",
+      "purpose": "test wrist-down contact orientation while keeping a safe z height",
+      "action_type": "touch",
+      "arm_used": "right",
+      "stage_name": "touch_downward",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 38,
+        "right_shoulder_roll": -14,
+        "right_elbow_pitch": 26,
+        "right_wrist_pitch": -24
+      },
+      "joint_names": [
+        "r_shoulder_z",
+        "r_shoulder_y",
+        "r_arm_x",
+        "r_elbow_y",
+        "r_wrist_z",
+        "r_wrist_x"
+      ],
+      "hand_state": "neutral",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.15
+      },
+      "wrist_forearm_orientation_note": "Use this to compare wrist-down orientation against the upward check-mark failure case.",
+      "safety_note": "Preview first. Do not execute on the real robot unless supervised and safety is confirmed.",
+      "real_robot_motion_commanded": false,
+      "execution_enabled_by_default": false
+    },
+    "right_arm_grasp_attempt_side": {
+      "name": "right_arm_grasp_attempt_side",
+      "description": "Preview a side grasp attempt: approach at safe height, close hand, then lift/retreat.",
+      "purpose": "template for a staged side grasp primitive, not guaranteed grasp success",
+      "action_type": "grasp_attempt",
+      "arm_used": "right",
+      "stage_name": "grasp_attempt_side",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 32,
+        "right_shoulder_roll": -18,
+        "right_elbow_pitch": 34,
+        "right_wrist_pitch": -18
+      },
+      "joint_names": [
+        "r_shoulder_z",
+        "r_shoulder_y",
+        "r_arm_x",
+        "r_elbow_y",
+        "r_wrist_z",
+        "r_wrist_x"
+      ],
+      "hand_state": "close",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.20,
+        "y": -0.10,
+        "z": 0.15
+      },
+      "wrist_forearm_orientation_note": "Close only after the hand is near the object and the wrist is aligned downward/sideways.",
+      "safety_note": "Preview first. This template is not automatically sent to real motors.",
+      "real_robot_motion_commanded": false,
+      "execution_enabled_by_default": false
+    },
+    "right_arm_lift_retreat": {
+      "name": "right_arm_lift_retreat",
+      "description": "Preview a small lift and retreat after a possible grasp.",
+      "purpose": "lift/retreat stage after hand close",
+      "action_type": "lift",
+      "arm_used": "right",
+      "stage_name": "lift_retreat",
+      "joint_angles_deg": {
+        "right_shoulder_pitch": 24,
+        "right_shoulder_roll": -12,
+        "right_elbow_pitch": 26,
+        "right_wrist_pitch": -8
+      },
+      "joint_names": [
+        "r_shoulder_z",
+        "r_shoulder_y",
+        "r_arm_x",
+        "r_elbow_y",
+        "r_wrist_z",
+        "r_wrist_x"
+      ],
+      "hand_state": "close",
+      "target_object": "red object",
+      "target_object_xyz": {
+        "x": 0.18,
+        "y": -0.10,
+        "z": 0.19
+      },
+      "wrist_forearm_orientation_note": "Retreat should be small and upward after close; no contact physics is simulated.",
+      "safety_note": "Preview only. No real robot motion is commanded.",
+      "real_robot_motion_commanded": false,
+      "execution_enabled_by_default": false
     }
   }
 }

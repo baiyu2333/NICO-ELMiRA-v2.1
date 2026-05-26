@@ -81,6 +81,14 @@ SAFE_PRESET_DEBUG_SCRIPT = (
     / "kinematic_preview"
     / "safe_preset_debug.py"
 )
+FIRST_PERSON_TRIAL_RECORDER_SCRIPT = (
+    API_ROOT
+    / "src"
+    / "ELMiRA"
+    / "scripts"
+    / "kinematic_preview"
+    / "first_person_trial_recorder.py"
+)
 KINEMATIC_TEMPLATE_FILE = (
     API_ROOT
     / "src"
@@ -92,6 +100,7 @@ KINEMATIC_TEMPLATE_FILE = (
 )
 KINEMATIC_CAPTURED_TEMPLATE_FILE = KINEMATIC_TEMPLATE_FILE.parent / "captured_right_arm_templates.json"
 KINEMATIC_LOG_DIR = API_ROOT / "logs" / "kinematic_preview"
+FIRST_PERSON_LOG_DIR = API_ROOT / "logs" / "first_person_trials"
 
 CHAT_UNAVAILABLE = (
     "Chat/action service unavailable; use NJF dry-run and robot evidence fallback."
@@ -106,6 +115,8 @@ direct_ik_process: Optional[subprocess.Popen] = None
 direct_ik_log_handle: Optional[Any] = None
 joint_record_process: Optional[subprocess.Popen] = None
 joint_record_log_handle: Optional[Any] = None
+first_person_record_process: Optional[subprocess.Popen] = None
+first_person_record_log_handle: Optional[Any] = None
 log_file_handles: List[Any] = []
 runtime_secrets = set()
 runtime_api_config = {"provider": "", "api_key": "", "env_var": ""}
@@ -373,7 +384,7 @@ def launch_robot(
     mic_device: str = "",
     offset_x: float = 0.0,
     offset_y: float = 0.0,
-    offset_z: float = 0.0,
+    offset_z: float = 0.03,
 ) -> str:
     global launch_process_nodes, launch_process_sm, launch_attempted, last_launch_started_at
 
@@ -1464,6 +1475,406 @@ def save_selected_frame_template_dashboard(
         return f"Save template failed: {sanitize_text(exc)}"
 
 
+def latest_first_person_trial_path() -> Path:
+    return FIRST_PERSON_LOG_DIR / "latest_trial_record.json"
+
+
+def latest_first_person_trial_text() -> str:
+    path = latest_first_person_trial_path()
+    return str(path)
+
+
+def resolve_first_person_trial_path(path_value: str) -> Path:
+    value = (path_value or "").strip()
+    if not value:
+        return latest_first_person_trial_path()
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else API_ROOT / path
+
+
+def read_first_person_trial(path_value: str = "") -> Optional[Dict[str, Any]]:
+    return load_json_safe(resolve_first_person_trial_path(path_value))
+
+
+def first_person_frame_paths(record: Optional[Dict[str, Any]]) -> List[str]:
+    if not record:
+        return []
+    paths = record.get("frame_paths")
+    if isinstance(paths, list) and paths:
+        return [str(path) for path in paths]
+    frames_dir = Path(str(record.get("frames_dir", "")))
+    if frames_dir.exists():
+        return [str(path) for path in sorted(frames_dir.glob("frame_*.jpg"))]
+    return []
+
+
+def first_person_trial_summary(record: Optional[Dict[str, Any]], fallback: str = "") -> str:
+    if not record:
+        return fallback or "No first-person trial loaded yet."
+    robot_touch_target = record.get("robot_touch_target_z_m", "")
+    robot_touch_offset = record.get("robot_touch_z_offset_m", "")
+    robot_touch_line = ""
+    if robot_touch_target not in ("", None, "unknown", "not_applicable"):
+        robot_touch_line = (
+            f"Robot touch target Z: {robot_touch_target} m "
+            f"(offset {robot_touch_offset} m)\n"
+        )
+    change_summary = record.get("trial_change_summary", "")
+    change_line = f"Change: {change_summary}\n" if change_summary else ""
+    return (
+        f"Trial: {record.get('trial_id', 'unknown')}\n"
+        f"Status: {record.get('status', 'unknown')}\n"
+        f"Frames: {record.get('frame_count', len(first_person_frame_paths(record)))}\n"
+        f"Topic: {record.get('image_topic', '')}\n"
+        f"Action: {record.get('action_type', '')}\n"
+        f"Target: {record.get('target_object', '')} at "
+        f"({record.get('x_m', '')}, {record.get('y_m', '')}, {record.get('z_m', '')}) m\n"
+        f"{robot_touch_line}"
+        f"{change_line}"
+        f"Key frame: {record.get('key_frame_index', 'unknown')}\n"
+        f"Outcome: {record.get('outcome', 'unknown')}\n"
+        f"Recorder commanded robot motion: {record.get('real_robot_motion_commanded_by_recorder', False)}\n"
+        f"Message: {record.get('message', '')}"
+    )
+
+
+def first_person_frame_info(record: Optional[Dict[str, Any]], frame_index: int) -> str:
+    if not record:
+        return "No first-person trial loaded."
+    frames = first_person_frame_paths(record)
+    if not frames:
+        return first_person_trial_summary(record, "Trial has no saved frames.")
+    index = max(0, min(int(frame_index or 0), len(frames) - 1))
+    return (
+        f"Trial: {record.get('trial_id', 'unknown')}\n"
+        f"Frame: {index} / {len(frames) - 1}\n"
+        f"Frame path: {frames[index]}\n"
+        f"Action: {record.get('action_type', '')}\n"
+        f"Target: {record.get('target_object', '')}\n"
+        f"Change: {record.get('trial_change_summary', '')}\n"
+        f"Offset: {record.get('offset_direction', 'unknown')} / {record.get('offset_size', 'unknown')}\n"
+        f"Contact: {record.get('contact_status', 'unknown')}\n"
+        f"Outcome: {record.get('outcome', 'unknown')}\n"
+        f"Robot motion commanded by recorder: {record.get('real_robot_motion_commanded_by_recorder', False)}"
+    )
+
+
+def list_first_person_image_topics_dashboard() -> str:
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(FIRST_PERSON_TRIAL_RECORDER_SCRIPT), "--list-image-topics"],
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else {}
+        topics = record.get("topics") if isinstance(record, dict) else []
+        if topics:
+            topic_lines = [f"- {item.get('topic')} ({item.get('type')})" for item in topics[:12]]
+            return "Image topics available:\n" + "\n".join(topic_lines)
+        return record.get("message", output[-1000:] or "No image topics found.") if isinstance(record, dict) else output[-1000:]
+    except subprocess.TimeoutExpired:
+        return "Image topic listing timed out."
+    except Exception as exc:
+        return f"Image topic listing unavailable: {sanitize_text(exc)}"
+
+
+def start_first_person_trial_recording_dashboard(
+    image_topic: str,
+    trial_id: str,
+    action_type: str,
+    target_object: str,
+    x_m: float,
+    y_m: float,
+    z_m: float,
+    fps: float,
+):
+    global first_person_record_process, first_person_record_log_handle
+    if process_alive(first_person_record_process):
+        return (
+            "First-person recording is already running. Command NICO through ELMiRA, then click Stop Trial Recording.",
+            latest_first_person_trial_text(),
+        )
+
+    FIRST_PERSON_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = FIRST_PERSON_LOG_DIR / "first_person_recording_process.log"
+    try:
+        if first_person_record_log_handle:
+            try:
+                first_person_record_log_handle.close()
+            except Exception:
+                pass
+        first_person_record_log_handle = log_path.open("w", encoding="utf-8", buffering=1)
+        first_person_record_process = subprocess.Popen(
+            [
+                sys.executable,
+                str(FIRST_PERSON_TRIAL_RECORDER_SCRIPT),
+                "--topic",
+                image_topic or "/nico/vision/left",
+                "--trial-id",
+                trial_id or "",
+                "--action-type",
+                action_type or "point",
+                "--target-object",
+                target_object or "red object",
+                "--x",
+                str(x_m if x_m is not None else 0.20),
+                "--y",
+                str(y_m if y_m is not None else -0.08),
+                "--z",
+                str(z_m if z_m is not None else 0.14),
+                "--fps",
+                str(fps if fps is not None else 5),
+            ],
+            cwd=str(API_ROOT),
+            stdout=first_person_record_log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            preexec_fn=os.setsid,
+        )
+        time.sleep(0.5)
+        if first_person_record_process.poll() is not None:
+            record = load_json_safe(latest_first_person_trial_path())
+            return (
+                first_person_trial_summary(
+                    record,
+                    "Live first-person recording unavailable: camera topic not available.",
+                ),
+                latest_first_person_trial_text(),
+            )
+        return (
+            "First-person recording started. Now command NICO through the normal ELMiRA pipeline, then click Stop Trial Recording.",
+            latest_first_person_trial_text(),
+        )
+    except Exception as exc:
+        return f"First-person recording failed to start: {sanitize_text(exc)}", latest_first_person_trial_text()
+
+
+def stop_first_person_trial_recording_dashboard():
+    global first_person_record_process, first_person_record_log_handle
+    if not process_alive(first_person_record_process):
+        record = load_json_safe(latest_first_person_trial_path())
+        frames = first_person_frame_paths(record)
+        return (
+            first_person_trial_summary(record, "No active first-person recording process."),
+            latest_first_person_trial_text(),
+            gr.update(maximum=max(0, len(frames) - 1), value=0),
+            first_person_frame_info(record, 0) if record else "No trial loaded.",
+        )
+
+    try:
+        os.killpg(os.getpgid(first_person_record_process.pid), signal.SIGINT)
+        first_person_record_process.wait(timeout=8)
+        status = "First-person recording stopped and saved."
+    except Exception:
+        try:
+            os.killpg(os.getpgid(first_person_record_process.pid), signal.SIGTERM)
+            first_person_record_process.wait(timeout=3)
+            status = "First-person recording stopped after timeout and saved if frames were available."
+        except Exception as exc:
+            status = f"First-person recording stop failed: {sanitize_text(exc)}"
+    finally:
+        first_person_record_process = None
+        if first_person_record_log_handle:
+            try:
+                first_person_record_log_handle.close()
+            except Exception:
+                pass
+            first_person_record_log_handle = None
+
+    record = load_json_safe(latest_first_person_trial_path())
+    frames = first_person_frame_paths(record)
+    return (
+        status + "\n" + first_person_trial_summary(record),
+        latest_first_person_trial_text(),
+        gr.update(maximum=max(0, len(frames) - 1), value=0),
+        first_person_frame_info(record, 0) if record else "No trial loaded.",
+    )
+
+
+def record_first_person_10_seconds_dashboard(
+    image_topic: str,
+    trial_id: str,
+    action_type: str,
+    target_object: str,
+    x_m: float,
+    y_m: float,
+    z_m: float,
+    duration_sec: float,
+    fps: float,
+):
+    if process_alive(first_person_record_process):
+        return (
+            "Stop the active first-person recording before starting a fixed recording.",
+            latest_first_person_trial_text(),
+            gr.update(),
+            "Active first-person recording is still running.",
+        )
+    duration = max(1, float(duration_sec or 10))
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(FIRST_PERSON_TRIAL_RECORDER_SCRIPT),
+                "--record-seconds",
+                str(duration),
+                "--topic",
+                image_topic or "/nico/vision/left",
+                "--trial-id",
+                trial_id or "",
+                "--action-type",
+                action_type or "point",
+                "--target-object",
+                target_object or "red object",
+                "--x",
+                str(x_m if x_m is not None else 0.20),
+                "--y",
+                str(y_m if y_m is not None else -0.08),
+                "--z",
+                str(z_m if z_m is not None else 0.14),
+                "--fps",
+                str(fps if fps is not None else 5),
+            ],
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=duration + 10,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else load_json_safe(latest_first_person_trial_path())
+        status = (
+            first_person_trial_summary(record, "Fixed first-person recording completed.")
+            if completed.returncode == 0
+            else output[-1200:]
+        )
+    except subprocess.TimeoutExpired:
+        record = load_json_safe(latest_first_person_trial_path())
+        status = "Fixed first-person recording timed out. Saved if frames were available."
+    except Exception as exc:
+        record = load_json_safe(latest_first_person_trial_path())
+        status = f"Fixed first-person recording failed: {sanitize_text(exc)}"
+    frames = first_person_frame_paths(record)
+    return (
+        status,
+        latest_first_person_trial_text(),
+        gr.update(maximum=max(0, len(frames) - 1), value=0),
+        first_person_frame_info(record, 0) if record else "No trial loaded.",
+    )
+
+
+def load_latest_first_person_trial_dashboard(path_value: str):
+    path = resolve_first_person_trial_path(path_value)
+    record = load_json_safe(path)
+    frames = first_person_frame_paths(record)
+    image_value = frames[0] if frames and Path(frames[0]).exists() else None
+    return (
+        str(path),
+        gr.update(maximum=max(0, len(frames) - 1), value=0),
+        image_value,
+        first_person_frame_info(record, 0) if record else f"No trial found at {path}",
+    )
+
+
+def render_first_person_frame_dashboard(path_value: str, frame_index: float):
+    record = read_first_person_trial(path_value)
+    frames = first_person_frame_paths(record)
+    if not frames:
+        return None, first_person_frame_info(record, 0), gr.update(value=0)
+    index = max(0, min(int(frame_index or 0), len(frames) - 1))
+    image_value = frames[index] if Path(frames[index]).exists() else None
+    return image_value, first_person_frame_info(record, index), gr.update(value=index)
+
+
+def previous_first_person_frame(path_value: str, frame_index: float):
+    new_index = max(0, int(frame_index or 0) - 1)
+    return render_first_person_frame_dashboard(path_value, new_index)
+
+
+def next_first_person_frame(path_value: str, frame_index: float):
+    record = read_first_person_trial(path_value)
+    max_index = max(0, len(first_person_frame_paths(record)) - 1)
+    new_index = min(max_index, int(frame_index or 0) + 1)
+    return render_first_person_frame_dashboard(path_value, new_index)
+
+
+def save_first_person_key_frame_dashboard(path_value: str, frame_index: float):
+    path = resolve_first_person_trial_path(path_value)
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(FIRST_PERSON_TRIAL_RECORDER_SCRIPT),
+                "--save-key-frame",
+                "--trial-record",
+                str(path),
+                "--frame-index",
+                str(int(frame_index or 0)),
+            ],
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else load_json_safe(path)
+        if completed.returncode != 0:
+            return output[-1000:]
+        return first_person_trial_summary(record)
+    except subprocess.TimeoutExpired:
+        return "Saving key frame timed out."
+    except Exception as exc:
+        return f"Saving key frame failed: {sanitize_text(exc)}"
+
+
+def save_first_person_manual_label_dashboard(
+    path_value: str,
+    offset_direction: str,
+    offset_size: str,
+    contact_status: str,
+    outcome: str,
+    failure_reason: str,
+    notes: str,
+):
+    path = resolve_first_person_trial_path(path_value)
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(FIRST_PERSON_TRIAL_RECORDER_SCRIPT),
+                "--save-manual-label",
+                "--trial-record",
+                str(path),
+                "--offset-direction",
+                offset_direction or "unknown",
+                "--offset-size",
+                offset_size or "unknown",
+                "--contact-status",
+                contact_status or "unknown",
+                "--outcome",
+                outcome or "unknown",
+                "--failure-reason",
+                failure_reason or "unknown",
+                "--notes",
+                notes or "",
+            ],
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else load_json_safe(path)
+        if completed.returncode != 0:
+            return output[-1000:]
+        return first_person_trial_summary(record)
+    except subprocess.TimeoutExpired:
+        return "Saving manual trial label timed out."
+    except Exception as exc:
+        return f"Saving manual trial label failed: {sanitize_text(exc)}"
+
+
 def preset_debug_summary(record: Optional[Dict[str, Any]], status: str) -> str:
     if not record:
         return status
@@ -1918,7 +2329,7 @@ def build_dashboard():
             with gr.Row():
                 offset_x = gr.Slider(label="X Offset", minimum=-0.2, maximum=0.2, value=0.0, step=0.01)
                 offset_y = gr.Slider(label="Y Offset", minimum=-0.2, maximum=0.2, value=0.0, step=0.01)
-                offset_z = gr.Slider(label="Z Offset", minimum=-0.4, maximum=0.4, value=0.0, step=0.01)
+                offset_z = gr.Slider(label="Z Offset", minimum=-0.4, maximum=0.4, value=0.03, step=0.01)
             dummy_mode = gr.Checkbox(label="Dummy mode", value=False)
             use_mllm_grounding = gr.Checkbox(label="Use MLLM grounding state", value=True)
             mic_device = gr.Textbox(label="Microphone device", value="")
@@ -2059,6 +2470,115 @@ def build_dashboard():
                 interactive=False,
             )
 
+        with gr.Accordion("First-Person Trial Recorder", open=False):
+            gr.Markdown(
+                "Record NICO camera frames during an existing ELMiRA action. "
+                "This recorder is read-only and sends no robot motion command."
+            )
+            with gr.Row():
+                first_person_image_topic = gr.Textbox(
+                    label="Image topic",
+                    value="/nico/vision/left",
+                    placeholder="/nico/vision/left or another image topic",
+                )
+                first_person_trial_id = gr.Textbox(
+                    label="Trial ID",
+                    value="",
+                    placeholder="Auto-generated if empty",
+                )
+            with gr.Row():
+                first_person_action_type = gr.Dropdown(
+                    ["point", "reach", "touch", "grasp_attempt"],
+                    label="Action type",
+                    value="point",
+                )
+                first_person_target_object = gr.Textbox(label="Target object", value="red object")
+            with gr.Row():
+                first_person_x = gr.Number(label="X value (m)", value=0.20)
+                first_person_y = gr.Number(label="Y value (m)", value=-0.08)
+                first_person_z = gr.Number(label="Z value (m)", value=0.14)
+            with gr.Row():
+                first_person_duration = gr.Number(label="Record duration seconds", value=10)
+                first_person_fps = gr.Number(label="Frame rate (fps)", value=5)
+            with gr.Row():
+                list_image_topics_btn = gr.Button("List Image Topics")
+                start_first_person_btn = gr.Button("Start Trial Recording")
+                stop_first_person_btn = gr.Button("Stop Trial Recording")
+                record_first_person_10_btn = gr.Button("Record 10 Seconds")
+            first_person_status = gr.Textbox(
+                label="Trial recording status",
+                value="No first-person trial recorded yet.",
+                lines=8,
+                interactive=False,
+            )
+            first_person_trial_path = gr.Textbox(
+                label="Trial record path",
+                value=latest_first_person_trial_text(),
+                interactive=True,
+            )
+            with gr.Row():
+                load_first_person_btn = gr.Button("Load Latest Trial Frames")
+                previous_first_person_btn = gr.Button("Previous Frame")
+                render_first_person_btn = gr.Button("Render Selected Frame")
+                next_first_person_btn = gr.Button("Next Frame")
+            first_person_frame_slider = gr.Slider(
+                label="Trial frame",
+                minimum=0,
+                maximum=0,
+                value=0,
+                step=1,
+            )
+            first_person_frame_image = gr.Image(label="Selected camera frame", interactive=False)
+            first_person_frame_info_box = gr.Textbox(
+                label="Frame info",
+                value="Load a trial, then select a frame.",
+                lines=8,
+                interactive=False,
+            )
+            save_first_person_key_frame_btn = gr.Button("Save Selected Frame as Key Frame")
+            gr.Markdown("Manual label after reviewing the selected frames.")
+            with gr.Row():
+                first_person_offset_direction = gr.Dropdown(
+                    ["centered", "left", "right", "too_high", "too_low", "too_far", "too_close", "unknown"],
+                    label="Offset direction",
+                    value="unknown",
+                )
+                first_person_offset_size = gr.Dropdown(
+                    ["none", "small", "medium", "large", "unknown"],
+                    label="Offset size",
+                    value="unknown",
+                )
+            with gr.Row():
+                first_person_contact_status = gr.Dropdown(
+                    ["no_contact", "near", "touch", "push", "grasped", "lifted", "unknown"],
+                    label="Contact status",
+                    value="unknown",
+                )
+                first_person_outcome = gr.Dropdown(
+                    ["success", "partial", "failed", "unknown"],
+                    label="Outcome",
+                    value="unknown",
+                )
+                first_person_failure_reason = gr.Dropdown(
+                    [
+                        "none",
+                        "y_offset",
+                        "z_too_high",
+                        "z_too_low",
+                        "x_distance",
+                        "vision",
+                        "ROS",
+                        "IK",
+                        "calibration",
+                        "hardware",
+                        "unknown",
+                    ],
+                    label="Failure reason",
+                    value="unknown",
+                )
+            first_person_notes = gr.Textbox(label="Notes", value="", lines=3)
+            save_first_person_label_btn = gr.Button("Save Manual Trial Label")
+
         with gr.Accordion("Safety Debug: Right Arm Presets", open=False):
             gr.Markdown(
                 "These controls may move the real robot if execution is connected. "
@@ -2085,6 +2605,9 @@ def build_dashboard():
                 preview_reach_btn = gr.Button("Preview Right-Arm Reach Pose")
             with gr.Row():
                 preview_pre_grasp_btn = gr.Button("Preview Right-Arm Pre-Grasp Pose")
+                preview_touch_forward_btn = gr.Button("Preview Touch Forward")
+                preview_touch_side_btn = gr.Button("Preview Touch Side")
+            with gr.Row():
                 preview_close_hand_btn = gr.Button("Preview Close Hand Pose")
                 preview_lift_btn = gr.Button("Preview Lift Pose")
             with gr.Row():
@@ -2093,6 +2616,9 @@ def build_dashboard():
                 execute_reach_btn = gr.Button("Execute Right-Arm Reach Pose")
             with gr.Row():
                 execute_pre_grasp_btn = gr.Button("Execute Right-Arm Pre-Grasp Pose")
+                execute_touch_forward_btn = gr.Button("Execute Touch Forward")
+                execute_touch_side_btn = gr.Button("Execute Touch Side")
+            with gr.Row():
                 execute_lift_btn = gr.Button("Execute Lift Pose")
                 execute_open_hand_btn = gr.Button("Open Right Hand")
                 execute_close_hand_btn = gr.Button("Close Right Hand")
@@ -2105,7 +2631,11 @@ def build_dashboard():
                     cartesian_x = gr.Slider(label="X forward (m)", minimum=0.10, maximum=0.32, value=0.20, step=0.01)
                     cartesian_y = gr.Slider(label="Y right/left (m)", minimum=-0.25, maximum=0.05, value=-0.20, step=0.01)
                     cartesian_z = gr.Slider(label="Z height (m)", minimum=0.60, maximum=0.78, value=0.70, step=0.01)
-                cartesian_orientation = gr.Dropdown(["point", "reach"], label="Orientation", value="point")
+                cartesian_orientation = gr.Dropdown(
+                    ["point", "reach", "touch_forward", "touch_side"],
+                    label="Orientation",
+                    value="touch_forward",
+                )
                 move_xyz_btn = gr.Button("Move Right Arm to XYZ (IK)")
             gr.Markdown("Captured templates reuse joint states recorded from successful ELMiRA motion.")
             captured_template_choices = captured_direct_template_names()
@@ -2356,6 +2886,96 @@ def build_dashboard():
             ],
             outputs=save_template_status,
         )
+        list_image_topics_btn.click(
+            list_first_person_image_topics_dashboard,
+            outputs=first_person_status,
+        )
+        start_first_person_btn.click(
+            start_first_person_trial_recording_dashboard,
+            inputs=[
+                first_person_image_topic,
+                first_person_trial_id,
+                first_person_action_type,
+                first_person_target_object,
+                first_person_x,
+                first_person_y,
+                first_person_z,
+                first_person_fps,
+            ],
+            outputs=[first_person_status, first_person_trial_path],
+        )
+        stop_first_person_btn.click(
+            stop_first_person_trial_recording_dashboard,
+            outputs=[
+                first_person_status,
+                first_person_trial_path,
+                first_person_frame_slider,
+                first_person_frame_info_box,
+            ],
+        )
+        record_first_person_10_btn.click(
+            record_first_person_10_seconds_dashboard,
+            inputs=[
+                first_person_image_topic,
+                first_person_trial_id,
+                first_person_action_type,
+                first_person_target_object,
+                first_person_x,
+                first_person_y,
+                first_person_z,
+                first_person_duration,
+                first_person_fps,
+            ],
+            outputs=[
+                first_person_status,
+                first_person_trial_path,
+                first_person_frame_slider,
+                first_person_frame_info_box,
+            ],
+        )
+        load_first_person_btn.click(
+            load_latest_first_person_trial_dashboard,
+            inputs=first_person_trial_path,
+            outputs=[
+                first_person_trial_path,
+                first_person_frame_slider,
+                first_person_frame_image,
+                first_person_frame_info_box,
+            ],
+        )
+        render_first_person_btn.click(
+            render_first_person_frame_dashboard,
+            inputs=[first_person_trial_path, first_person_frame_slider],
+            outputs=[first_person_frame_image, first_person_frame_info_box, first_person_frame_slider],
+        )
+        previous_first_person_btn.click(
+            previous_first_person_frame,
+            inputs=[first_person_trial_path, first_person_frame_slider],
+            outputs=[first_person_frame_image, first_person_frame_info_box, first_person_frame_slider],
+        )
+        next_first_person_btn.click(
+            next_first_person_frame,
+            inputs=[first_person_trial_path, first_person_frame_slider],
+            outputs=[first_person_frame_image, first_person_frame_info_box, first_person_frame_slider],
+        )
+        save_first_person_key_frame_btn.click(
+            save_first_person_key_frame_dashboard,
+            inputs=[first_person_trial_path, first_person_frame_slider],
+            outputs=first_person_status,
+        )
+        save_first_person_label_btn.click(
+            save_first_person_manual_label_dashboard,
+            inputs=[
+                first_person_trial_path,
+                first_person_offset_direction,
+                first_person_offset_size,
+                first_person_contact_status,
+                first_person_outcome,
+                first_person_failure_reason,
+                first_person_notes,
+            ],
+            outputs=first_person_status,
+        )
         preview_reset_btn.click(
             lambda safety: run_safe_preset_dashboard("reset_pose", "preview", safety),
             inputs=safety_confirmed,
@@ -2373,6 +2993,16 @@ def build_dashboard():
         )
         preview_pre_grasp_btn.click(
             lambda safety: run_safe_preset_dashboard("right_arm_pre_grasp_pose", "preview", safety),
+            inputs=safety_confirmed,
+            outputs=[preset_status, preset_image, preset_json_path],
+        )
+        preview_touch_forward_btn.click(
+            lambda safety: run_safe_preset_dashboard("right_arm_touch_forward", "preview", safety),
+            inputs=safety_confirmed,
+            outputs=[preset_status, preset_image, preset_json_path],
+        )
+        preview_touch_side_btn.click(
+            lambda safety: run_safe_preset_dashboard("right_arm_touch_side", "preview", safety),
             inputs=safety_confirmed,
             outputs=[preset_status, preset_image, preset_json_path],
         )
@@ -2403,6 +3033,16 @@ def build_dashboard():
         )
         execute_pre_grasp_btn.click(
             lambda safety: run_safe_preset_dashboard("right_arm_pre_grasp_pose", "execute", safety),
+            inputs=safety_confirmed,
+            outputs=[preset_status, preset_image, preset_json_path],
+        )
+        execute_touch_forward_btn.click(
+            lambda safety: run_safe_preset_dashboard("right_arm_touch_forward", "execute", safety),
+            inputs=safety_confirmed,
+            outputs=[preset_status, preset_image, preset_json_path],
+        )
+        execute_touch_side_btn.click(
+            lambda safety: run_safe_preset_dashboard("right_arm_touch_side", "execute", safety),
             inputs=safety_confirmed,
             outputs=[preset_status, preset_image, preset_json_path],
         )
@@ -2464,7 +3104,8 @@ def port_available(port: int) -> bool:
 
 
 def cleanup_on_exit() -> None:
-    global direct_control_process, direct_control_log_handle, direct_ik_process, direct_ik_log_handle, joint_record_process, joint_record_log_handle
+    global direct_control_process, direct_control_log_handle, direct_ik_process, direct_ik_log_handle
+    global joint_record_process, joint_record_log_handle, first_person_record_process, first_person_record_log_handle
     if process_alive(direct_ik_process):
         try:
             os.killpg(os.getpgid(direct_ik_process.pid), signal.SIGINT)
@@ -2513,6 +3154,22 @@ def cleanup_on_exit() -> None:
         except Exception:
             pass
         joint_record_log_handle = None
+    if process_alive(first_person_record_process):
+        try:
+            os.killpg(os.getpgid(first_person_record_process.pid), signal.SIGINT)
+            first_person_record_process.wait(timeout=5)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(first_person_record_process.pid), signal.SIGKILL)
+            except Exception:
+                pass
+        first_person_record_process = None
+    if first_person_record_log_handle:
+        try:
+            first_person_record_log_handle.close()
+        except Exception:
+            pass
+        first_person_record_log_handle = None
     if process_alive(launch_process_nodes) or process_alive(launch_process_sm):
         stop_robot()
 

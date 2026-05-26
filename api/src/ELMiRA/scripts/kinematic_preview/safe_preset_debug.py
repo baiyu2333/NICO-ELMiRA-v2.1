@@ -26,6 +26,7 @@ from kinematic_preview.action_templates import get_template
 from kinematic_preview.live_joint_state_reader import ros_master_available
 from kinematic_preview.nico_stick_model import NICOStickModel
 from kinematic_preview.render_stick_nico import render_preview
+from utils.constants import filter_commandable_joints
 from utils.kinematic_trial_logger import find_api_root, preview_paths, write_json
 
 
@@ -34,6 +35,8 @@ PRESET_TO_TEMPLATE = {
     "right_arm_point_pose": "right_arm_point_red_object",
     "right_arm_reach_pose": "right_arm_reach_forward",
     "right_arm_pre_grasp_pose": "right_arm_pre_grasp",
+    "right_arm_touch_forward": "right_arm_touch_forward",
+    "right_arm_touch_side": "right_arm_touch_side",
     "close_hand_pose": "right_arm_close_hand",
     "lift_pose": "right_arm_lift_pose",
     "open_right_hand": "right_arm_pre_grasp",
@@ -45,14 +48,27 @@ IK_SERVICE = "/inverse_kinematics"
 HAND_OPEN_TOPIC = "/nico/motion/openHand"
 HAND_CLOSE_TOPIC = "/nico/motion/closeHand"
 XL320_TOPIC = "/nico/motion/xl320_cmd"
-XL320_RIGHT_HAND_MOTOR_IDS = [33, 34, 35, 36, 37]
+XL320_RIGHT_HAND_MOTOR_IDS = [34, 35, 36, 37]
 XL320_RIGHT_WRIST_POSITIONS_DEG = {
-    30: 80.0,
-    31: 0.0,
+    31: 80.0,
+    33: -45.0,
 }
 XL320_HAND_OPEN_DEG = -150.0
 XL320_HAND_CLOSE_DEG = 60.0
-COMMANDABLE_RIGHT_ARM_JOINTS = ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"]
+COMMANDABLE_RIGHT_ARM_JOINTS = [
+    "r_shoulder_z",
+    "r_shoulder_y",
+    "r_arm_x",
+    "r_elbow_y",
+    "r_wrist_z",
+    "r_wrist_x",
+]
+REQUIRED_RIGHT_ARM_BASE_JOINTS = [
+    "r_shoulder_z",
+    "r_shoulder_y",
+    "r_arm_x",
+    "r_elbow_y",
+]
 RIGHT_ARM_IK_INITIAL_NAMES = [
     "r_shoulder_z",
     "r_shoulder_y",
@@ -73,32 +89,44 @@ XYZ_LIMITS = {
 # small preset poses, not user-editable trajectories.
 EXECUTION_PRESETS_RAD = {
     "reset_pose": {
-        "joint_names": ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"],
-        "positions": [-0.157, 0.0, -0.8203, -1.57],
+        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+        "positions": [-0.157, 0.0, -0.8203, -1.57, -1.39, 0.0],
         "path_time": 3.0,
         "description": "Return right arm to the known default/safe pose.",
     },
     "right_arm_point_pose": {
-        "joint_names": ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"],
-        "positions": [-0.22, 0.0, -0.68, -1.20],
+        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+        "positions": [-0.22, 0.0, -0.68, -1.20, -1.39, -0.35],
         "path_time": 3.0,
         "description": "Conservative right-arm point pose.",
     },
     "right_arm_reach_pose": {
-        "joint_names": ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"],
-        "positions": [-0.20, 0.0, -0.58, -1.05],
+        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+        "positions": [-0.20, 0.0, -0.58, -1.05, -1.39, -0.20],
         "path_time": 3.0,
         "description": "Conservative right-arm forward reach pose.",
     },
     "right_arm_pre_grasp_pose": {
-        "joint_names": ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"],
-        "positions": [-0.24, 0.0, -0.64, -1.12],
+        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+        "positions": [-0.24, 0.0, -0.64, -1.12, -1.39, -0.30],
         "path_time": 3.0,
         "description": "Conservative right-arm pre-grasp pose.",
     },
+    "right_arm_touch_forward": {
+        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+        "positions": [-0.20, 0.0, -0.56, -0.96, -1.39, -0.55],
+        "path_time": 3.5,
+        "description": "Experimental forward touch pose with wrist angled downward. Preview first; execute only with safety confirmation.",
+    },
+    "right_arm_touch_side": {
+        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+        "positions": [-0.28, 0.0, -0.58, -1.00, -1.10, -0.45],
+        "path_time": 3.5,
+        "description": "Experimental side touch pose with wrist angled downward from robot-right side. Preview first; execute only with safety confirmation.",
+    },
     "lift_pose": {
-        "joint_names": ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"],
-        "positions": [-0.157, 0.0, -0.72, -1.36],
+        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+        "positions": [-0.157, 0.0, -0.72, -1.36, -1.39, 0.0],
         "path_time": 3.0,
         "description": "Conservative right-arm lift/retreat pose.",
     },
@@ -260,6 +288,33 @@ def right_arm_initial_position():
     return names, positions
 
 
+def apply_orientation_mode(pose: Any, orientation_mode: str) -> str:
+    """Set a named experimental end-effector orientation on a geometry Pose."""
+    mode = str(orientation_mode or "point").strip().lower()
+    if mode in ("point", "touch_forward"):
+        # Forward/down orientation already used by ELMiRA's show action.
+        pose.orientation.x = -1.0
+        pose.orientation.y = 0.0
+        pose.orientation.z = 0.0
+        pose.orientation.w = 0.0
+        return mode
+    if mode == "touch_side":
+        # Candidate side-contact orientation. Physical execution still depends
+        # on which wrist joints are exposed by the active motor config.
+        pose.orientation.x = -0.7071068
+        pose.orientation.y = 0.0
+        pose.orientation.z = 0.7071068
+        pose.orientation.w = 0.0
+        return mode
+
+    # Existing reach/manipulation orientation.
+    pose.orientation.x = 0.7071068
+    pose.orientation.y = 0.0
+    pose.orientation.z = 0.0
+    pose.orientation.w = 0.7071068
+    return "reach"
+
+
 def execute_cartesian_xyz(
     x: float,
     y: float,
@@ -351,16 +406,7 @@ def execute_cartesian_xyz(
     pose.position.x = target["x"]
     pose.position.y = target["y"]
     pose.position.z = target["z"]
-    if orientation_mode == "point":
-        pose.orientation.x = -1.0
-        pose.orientation.y = 0.0
-        pose.orientation.z = 0.0
-        pose.orientation.w = 0.0
-    else:
-        pose.orientation.x = 0.7071068
-        pose.orientation.y = 0.0
-        pose.orientation.z = 0.0
-        pose.orientation.w = 0.7071068
+    applied_orientation_mode = apply_orientation_mode(pose, orientation_mode)
 
     initial_names, initial_positions = right_arm_initial_position()
     try:
@@ -378,15 +424,29 @@ def execute_cartesian_xyz(
             name: float(position)
             for name, position in zip(ik_joint_position.joint_name, ik_joint_position.position)
         }
-        missing = [name for name in COMMANDABLE_RIGHT_ARM_JOINTS if name not in ik_values]
+        missing = [name for name in REQUIRED_RIGHT_ARM_BASE_JOINTS if name not in ik_values]
         if missing:
-            raise RuntimeError("IK result missing commandable joints: " + ", ".join(missing))
+            raise RuntimeError("IK result missing required right-arm joints: " + ", ".join(missing))
+
+        requested_names = [name for name in COMMANDABLE_RIGHT_ARM_JOINTS if name in ik_values]
+        requested_positions = [ik_values[name] for name in requested_names]
+        command_names, command_positions, dropped = filter_commandable_joints(
+            "r_arm", requested_names, requested_positions
+        )
+        missing_required_after_filter = [
+            name for name in REQUIRED_RIGHT_ARM_BASE_JOINTS if name not in command_names
+        ]
+        if missing_required_after_filter:
+            raise RuntimeError(
+                "Active Motion config filtered required right-arm joints: "
+                + ", ".join(missing_required_after_filter)
+            )
 
         arm_request = SetJointPositionRequest()
         arm_request.planning_group = "r_arm"
         arm_request.joint_position = JointPosition()
-        arm_request.joint_position.joint_name = list(COMMANDABLE_RIGHT_ARM_JOINTS)
-        arm_request.joint_position.position = [ik_values[name] for name in COMMANDABLE_RIGHT_ARM_JOINTS]
+        arm_request.joint_position.joint_name = command_names
+        arm_request.joint_position.position = command_positions
         arm_request.path_time = float(path_time)
         arm_response = rospy.ServiceProxy(ARM_SERVICE, SetJointPosition)(arm_request)
         success = bool(getattr(arm_response, "is_planned", True))
@@ -402,14 +462,18 @@ def execute_cartesian_xyz(
             "failure_reason": "" if success else "Right-arm service returned failure.",
             "target_xyz": target,
             "target_was_clamped": target_info["was_clamped"],
-            "orientation_mode": orientation_mode,
-            "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
+            "orientation_mode": applied_orientation_mode,
+            "joint_names": command_names,
             "joint_positions_rad": arm_request.joint_position.position,
             "joint_positions_deg": [round(math.degrees(value), 2) for value in arm_request.joint_position.position],
+            "dropped_joints": dropped,
             "path_time": arm_request.path_time,
             "ros_service": ARM_SERVICE,
             "ik_service": IK_SERVICE,
-            "notes": "Experimental Cartesian IK control using constrained ELMiRA IK coordinates.",
+            "notes": (
+                "Experimental Cartesian IK control using constrained ELMiRA IK coordinates. "
+                "If SR wrist IDs 23/25 are disabled, physical wrist alignment is handled separately by the XL-320 hand wrapper."
+            ),
         }
     except Exception as exc:
         return {
@@ -483,11 +547,34 @@ def execute_right_arm_preset(preset_name: str, timestamp: str, template: Dict[st
                 safety_confirmed,
                 "Motion node is not subscribed to /nico/motion/setAngle. The joint service is up, but physical motor bridge is not ready.",
             )
+        command_names, command_positions, dropped = filter_commandable_joints(
+            "r_arm", preset["joint_names"], preset["positions"]
+        )
+        missing_required_after_filter = [
+            name for name in REQUIRED_RIGHT_ARM_BASE_JOINTS if name not in command_names
+        ]
+        if missing_required_after_filter:
+            return {
+                "timestamp": timestamp,
+                "mode": "execute",
+                "preset_name": preset_name,
+                "arm_used": "right",
+                "hand_state": template.get("hand_state", "neutral"),
+                "safety_confirmed": safety_confirmed,
+                "real_robot_motion_commanded": False,
+                "execution_status": "failed",
+                "failure_reason": (
+                    "Active Motion config filtered required right-arm joints: "
+                    + ", ".join(missing_required_after_filter)
+                ),
+                "ros_service": ARM_SERVICE,
+                "notes": "Right-arm preset blocked before confirmed execution.",
+            }
         request = SetJointPositionRequest()
         request.planning_group = "r_arm"
         request.joint_position = JointPosition()
-        request.joint_position.joint_name = list(preset["joint_names"])
-        request.joint_position.position = list(preset["positions"])
+        request.joint_position.joint_name = command_names
+        request.joint_position.position = command_positions
         request.path_time = float(preset.get("path_time", 3.0))
         proxy = rospy.ServiceProxy(ARM_SERVICE, SetJointPosition)
         response = proxy(request)
@@ -503,9 +590,10 @@ def execute_right_arm_preset(preset_name: str, timestamp: str, template: Dict[st
             "execution_status": "executed" if success else "failed",
             "failure_reason": "" if success else "Joint service returned failure.",
             "ros_service": ARM_SERVICE,
-            "joint_names": list(preset["joint_names"]),
-            "joint_positions_rad": list(preset["positions"]),
-            "joint_positions_deg": [round(math.degrees(value), 2) for value in preset["positions"]],
+            "joint_names": command_names,
+            "joint_positions_rad": command_positions,
+            "joint_positions_deg": [round(math.degrees(value), 2) for value in command_positions],
+            "dropped_joints": dropped,
             "path_time": request.path_time,
             "notes": preset.get("description", "Fixed right-arm preset executed."),
         }
@@ -567,7 +655,7 @@ def execute_right_hand_preset(preset_name: str, timestamp: str, template: Dict[s
 
     preset = HAND_PRESETS[preset_name]
     try:
-        publisher = rospy.Publisher(preset["topic"], nicomsg.msg.s, queue_size=1)
+        publisher = rospy.Publisher(preset["topic"], nicomsg.msg.sff, queue_size=1)
         deadline = time.time() + 2.0
         while publisher.get_num_connections() == 0 and time.time() < deadline and not rospy.is_shutdown():
             rospy.sleep(0.05)
@@ -736,7 +824,11 @@ def main() -> int:
     parser.add_argument("--x", type=float, default=0.20)
     parser.add_argument("--y", type=float, default=-0.20)
     parser.add_argument("--z", type=float, default=0.70)
-    parser.add_argument("--orientation-mode", choices=["point", "reach"], default="point")
+    parser.add_argument(
+        "--orientation-mode",
+        choices=["point", "reach", "touch_forward", "touch_side"],
+        default="point",
+    )
     parser.add_argument("--path-time", type=float, default=3.0)
     args = parser.parse_args()
     if args.cartesian:

@@ -12,6 +12,7 @@ the detected object position), this state:
 5. Outputs the corrected trajectory for execution
 
 Supported refinement modes:
+- none: use the detected object coordinate without visual correction
 - mllm: existing MLLM-estimated metric correction
 - njf: NJF-inspired local visual Jacobian controller
 - hybrid: MLLM coarse correction plus bounded NJF-inspired micro-correction
@@ -30,7 +31,7 @@ from elmira.srv import (
     InverseKinematics,
     NJFPredictAction,
 )
-from utils.constants import clamp_to_workspace, get_arm_orientation
+from utils.constants import clamp_to_workspace, get_arm_orientation, get_touch_orientation
 
 
 def _bounded_float_param(name, default_value, min_value, max_value):
@@ -129,9 +130,17 @@ class GraspRefinement(smach.StateMachine):
                         step["hand_action"] = None
                     
                     trajectory.append(step)
-                # Only append return to init pose if this is the final grasping stage
+                # Only append return to the active arm/head. Appending the full
+                # init pose can command the opposite arm during right-arm tests.
                 if getattr(userdata, "close_hand", True):
-                    userdata.joint_trajectory = trajectory + [userdata.motion_init_pose]
+                    reset_pose = {}
+                    if "head" in userdata.motion_init_pose:
+                        reset_pose["head"] = userdata.motion_init_pose["head"]
+                    if userdata.planning_group in userdata.motion_init_pose:
+                        reset_pose[userdata.planning_group] = userdata.motion_init_pose[
+                            userdata.planning_group
+                        ]
+                    userdata.joint_trajectory = trajectory + ([reset_pose] if reset_pose else [])
                     userdata.hand_action = "close"
                 else:
                     userdata.joint_trajectory = trajectory
@@ -191,7 +200,10 @@ class CallRefinementService(smach.State):
             f"({userdata.real_x:.3f}, {userdata.real_y:.3f})"
         )
 
-        if mode == "mllm":
+        if mode in ("none", "off", "disabled"):
+            rospy.loginfo("GraspRefinement: refinement disabled; using detected coordinates")
+            x_off, y_off, ok = 0.0, 0.0, True
+        elif mode == "mllm":
             x_off, y_off, ok = self._call_mllm_refinement()
         elif mode == "njf":
             x_off, y_off, ok = self._call_njf_refinement(
@@ -222,9 +234,9 @@ class CallRefinementService(smach.State):
             )
         else:
             rospy.logwarn(
-                "GraspRefinement: Unknown refinement_mode '%s'; using mllm", mode
+                "GraspRefinement: Unknown refinement_mode '%s'; using no correction", mode
             )
-            x_off, y_off, ok = self._call_mllm_refinement()
+            x_off, y_off, ok = 0.0, 0.0, True
 
         userdata.x_correction, userdata.y_correction = self._clamp_total_correction(
             x_off, y_off
@@ -423,8 +435,13 @@ class PlanRefinedGrasp(smach.State):
         hover_z_offset = _bounded_float_param(
             "/elmira/grasp_hover_z_offset", 0.06, 0.02, 0.20
         )
+        default_contact_offset = (
+            float(rospy.get_param("/elmira/right_touch_z_offset", -0.075))
+            if is_right
+            else 0.02
+        )
         contact_z_offset = _bounded_float_param(
-            "/elmira/grasp_contact_z_offset", 0.02, -0.02, hover_z_offset
+            "/elmira/grasp_contact_z_offset", default_contact_offset, -0.12, hover_z_offset
         )
         lift_z_offset = _bounded_float_param(
             "/elmira/grasp_lift_z_offset", 0.12, max(0.05, hover_z_offset), 0.30
@@ -437,23 +454,31 @@ class PlanRefinedGrasp(smach.State):
         )
 
         poses = []
+        use_touch_orientation = bool(
+            rospy.get_param("/elmira/grasp_use_touch_orientation", True)
+        )
+        grasp_orientation = (
+            get_touch_orientation(is_right)
+            if use_touch_orientation and is_right
+            else get_arm_orientation(is_right)
+        )
         
         # 0. Align horizontally (keep safe height)
         hover_pose = Pose()
         hover_pose.position = Point(refined_x, refined_y, table_z + hover_z_offset)
-        hover_pose.orientation = get_arm_orientation(is_right)
+        hover_pose.orientation = grasp_orientation
         poses.append(hover_pose)
         
         # 1. Refined grasp/contact pose. The hand closes after this pose.
         grasp_pose = Pose()
         grasp_pose.position = Point(refined_x, refined_y, table_z + contact_z_offset)
-        grasp_pose.orientation = get_arm_orientation(is_right)
+        grasp_pose.orientation = grasp_orientation
         poses.append(grasp_pose)
         
         # 2. Lift pose (raise object straight up after grasp)
         lift_pose = Pose()
         lift_pose.position = Point(refined_x, refined_y, table_z + lift_z_offset)
-        lift_pose.orientation = get_arm_orientation(is_right)
+        lift_pose.orientation = grasp_orientation
         poses.append(lift_pose)
         
         userdata.refined_poses = poses

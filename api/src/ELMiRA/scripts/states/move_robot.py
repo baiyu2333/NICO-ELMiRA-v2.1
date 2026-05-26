@@ -222,7 +222,7 @@ class MoveRobot(smach.Concurrence):
             )
 
 
-class MoveRobotPart(smach.Sequence):
+class MoveRobotPart(smach.StateMachine):
     """Move robot part and monitor state until success."""
 
     def __init__(self, srv_topic, sub_topic):
@@ -234,10 +234,19 @@ class MoveRobotPart(smach.Sequence):
         super(MoveRobotPart, self).__init__(
             input_keys=["names", "positions"],
             outcomes=["succeeded", "aborted", "preempted"],
-            connector_outcome="succeeded",
         )
         # Open the container
         with self:
+
+            @smach.cb_interface(input_keys=["names"], outcomes=["has_target", "no_target"])
+            def has_joint_targets_cb(userdata):
+                return "has_target" if list(userdata.names or []) else "no_target"
+
+            smach.StateMachine.add(
+                "CHECK_JOINT_TARGETS",
+                smach.CBState(has_joint_targets_cb),
+                transitions={"no_target": "succeeded", "has_target": "START_MOVEMENT"},
+            )
 
             @smach.cb_interface(input_keys=["names", "positions"])
             def set_joint_position_request_cb(userdata, request):
@@ -247,7 +256,7 @@ class MoveRobotPart(smach.Sequence):
                 request.joint_position = joint_position
                 return request
 
-            smach.Sequence.add(
+            smach.StateMachine.add(
                 "START_MOVEMENT",
                 ServiceState(
                     srv_topic,
@@ -255,6 +264,11 @@ class MoveRobotPart(smach.Sequence):
                     request_cb=set_joint_position_request_cb,
                     input_keys=["names", "positions"],
                 ),
+                transitions={
+                    "succeeded": "WAIT_UNTIL_REACHED",
+                    "preempted": "preempted",
+                    "aborted": "aborted",
+                },
             )
 
             # TODO precision input parameter?
@@ -287,7 +301,7 @@ class MoveRobotPart(smach.Sequence):
                     and np.all(np.abs(ordered_velocity) < 0.01)
                 )
 
-            smach.Sequence.add(
+            smach.StateMachine.add(
                 "WAIT_UNTIL_REACHED",
                 MonitorState(
                     sub_topic,
@@ -296,5 +310,9 @@ class MoveRobotPart(smach.Sequence):
                     max_checks=move_wait_max_checks,
                     input_keys=["names", "positions"],
                 ),
-                transitions={"valid": "succeeded", "invalid": "succeeded"},
+                transitions={
+                    "valid": "succeeded",
+                    "invalid": "succeeded",
+                    "preempted": "preempted",
+                },
             )

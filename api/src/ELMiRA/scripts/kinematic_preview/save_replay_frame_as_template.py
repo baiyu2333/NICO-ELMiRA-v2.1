@@ -29,7 +29,14 @@ from utils.kinematic_trial_logger import write_json
 
 
 CAPTURED_TEMPLATE_PATH = SCRIPT_DIR / "templates" / "captured_right_arm_templates.json"
-COMMANDABLE_RIGHT_ARM_JOINTS = ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"]
+COMMANDABLE_RIGHT_ARM_JOINTS = [
+    "r_shoulder_z",
+    "r_shoulder_y",
+    "r_arm_x",
+    "r_elbow_y",
+    "r_wrist_z",
+    "r_wrist_x",
+]
 
 
 def load_captured_templates() -> Dict[str, Any]:
