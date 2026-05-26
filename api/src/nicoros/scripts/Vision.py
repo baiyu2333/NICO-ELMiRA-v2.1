@@ -229,7 +229,9 @@ class NicoRosVision:
             )
             return
         self._device.add_callback(self._callback)
+        self._device.open()
         self._stream_running = True
+        self._logger.info("Camera stream started with %d publisher(s)", len(self._publishers))
 
     def stop_stream(self):
         """

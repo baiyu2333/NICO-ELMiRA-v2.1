@@ -349,6 +349,22 @@ def convert_image_message(msg: Any, deps: Dict[str, Any]) -> Tuple[Optional[Any]
     return None, "Unsupported image message type."
 
 
+def resolve_topic_type(topic: str, deps: Dict[str, Any], timeout_s: float = 0.5) -> Optional[str]:
+    rospy = deps.get("rospy")
+    if rospy is None:
+        return None
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            for published_topic, msg_type in rospy.get_published_topics():
+                if published_topic == topic:
+                    return msg_type
+        except Exception:
+            return None
+        time.sleep(0.05)
+    return None
+
+
 def wait_for_camera_frame(topic: str, deps: Dict[str, Any], timeout_s: float) -> Tuple[Optional[Any], str]:
     rospy = deps.get("rospy")
     image_cls = deps.get("Image")
@@ -356,7 +372,15 @@ def wait_for_camera_frame(topic: str, deps: Dict[str, Any], timeout_s: float) ->
     if rospy is None:
         return None, f"ROS Python modules unavailable: {deps.get('ros_error')}"
 
-    message_types = [compressed_cls] if topic.endswith("/compressed") else [image_cls, compressed_cls]
+    topic_type = resolve_topic_type(topic, deps)
+    if topic_type == "sensor_msgs/Image":
+        message_types = [image_cls]
+    elif topic_type == "sensor_msgs/CompressedImage":
+        message_types = [compressed_cls]
+    elif topic.endswith("/compressed"):
+        message_types = [compressed_cls]
+    else:
+        message_types = [image_cls]
     errors = []
     for msg_type in message_types:
         if msg_type is None:
@@ -366,7 +390,12 @@ def wait_for_camera_frame(topic: str, deps: Dict[str, Any], timeout_s: float) ->
             return convert_image_message(msg, deps)
         except Exception as exc:
             errors.append(str(exc))
-    return None, "; ".join(errors[-2:]) or "No image frame received."
+    if topic_type:
+        return None, (
+            f"Topic {topic} is {topic_type}, but no frame arrived. "
+            + ("; ".join(errors[-1:]) if errors else "No image frame received.")
+        )
+    return None, "; ".join(errors[-1:]) or "No image frame received."
 
 
 def build_record(
