@@ -152,6 +152,18 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def invalid_image_coords(image_x: Any, image_y: Any) -> bool:
+    try:
+        x_value = float(image_x)
+        y_value = float(image_y)
+    except (TypeError, ValueError):
+        return True
+    # The red object should never be represented by the exact top-left image
+    # corner. In the dashboard this usually means Gradio sent empty Number
+    # fields as 0.0.
+    return abs(x_value) < 1e-9 and abs(y_value) < 1e-9
+
+
 def get_ros_float_param(name: str, default: float) -> float:
     try:
         import rospy
@@ -597,6 +609,11 @@ def build_record(args: argparse.Namespace) -> Dict[str, Any]:
     image_x = args.image_x
     image_y = args.image_y
     if args.stage == "detect":
+        detection = detect_target(target_object, args.timeout)
+        selected = detection.get("selected_target") or {}
+        image_x = selected.get("bottom_x", image_x)
+        image_y = selected.get("bottom_y", image_y)
+    elif args.stage == "coordinate" and invalid_image_coords(image_x, image_y):
         detection = detect_target(target_object, args.timeout)
         selected = detection.get("selected_target") or {}
         image_x = selected.get("bottom_x", image_x)

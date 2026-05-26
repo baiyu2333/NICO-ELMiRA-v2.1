@@ -5,8 +5,8 @@
   <arg name="framerate" default="30"/>
   <arg name="zoom" default="150"/>
   <arg name="tilt" default="-482400"/>
-  <!-- Let autodetection find cameras by serial ID (more reliable than hardcoded /dev/videoX) -->
-  <arg name="device_left" default=""/>
+  <!-- Current lab setup: desktop camera app confirms NICO first-person view on /dev/video0. -->
+  <arg name="device_left" default="/dev/video0"/>
   <arg name="device_right" default=""/>
 
   <node name="nicovision" pkg="nicoros" type="Vision.py"

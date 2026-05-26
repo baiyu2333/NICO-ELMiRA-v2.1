@@ -1991,6 +1991,46 @@ def grasp_debug_latest_json_path() -> str:
     return str(GRASP_DEBUG_LOG_DIR / "latest_grasp_plan.json")
 
 
+def latest_grasp_debug_record() -> Optional[Dict[str, Any]]:
+    return load_json_safe(GRASP_DEBUG_LOG_DIR / "latest_grasp_plan.json")
+
+
+def detected_image_coords(record: Optional[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+    if not record:
+        return None, None
+    detection = record.get("detection") or {}
+    selected = detection.get("selected_target") or {}
+    x_value = selected.get("bottom_x", record.get("image_x"))
+    y_value = selected.get("bottom_y", record.get("image_y"))
+    try:
+        return float(x_value), float(y_value)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def grasp_real_coords(record: Optional[Dict[str, Any]]) -> Tuple[Optional[float], Optional[float]]:
+    if not record:
+        return None, None
+    coord = record.get("coordinate_transfer") or {}
+    x_value = coord.get("real_x", record.get("real_x"))
+    y_value = coord.get("real_y", record.get("real_y"))
+    try:
+        return float(x_value), float(y_value)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def image_coords_need_detection_fallback(image_x: Any, image_y: Any) -> bool:
+    try:
+        x_value = float(image_x)
+        y_value = float(image_y)
+    except (TypeError, ValueError):
+        return True
+    # 0,0 is almost never a useful detected object point here; it usually means
+    # the Gradio number fields were left empty.
+    return abs(x_value) < 1e-9 and abs(y_value) < 1e-9
+
+
 def grasp_debug_summary(record: Optional[Dict[str, Any]], fallback: str = "") -> str:
     if not record:
         return fallback or "No grasp debug plan has been generated yet."
@@ -2040,6 +2080,11 @@ def run_grasp_debug_dashboard(
     use_detection: bool = False,
     use_coordinate: bool = False,
 ):
+    if stage != "detect" and image_coords_need_detection_fallback(image_x, image_y):
+        latest_x, latest_y = detected_image_coords(latest_grasp_debug_record())
+        if latest_x is not None and latest_y is not None:
+            image_x, image_y = latest_x, latest_y
+
     command = [
         sys.executable,
         str(GRASP_DEBUG_SCRIPT),
@@ -2087,14 +2132,29 @@ def run_grasp_debug_dashboard(
 
 
 def run_grasp_debug_detect(target_object: str, image_x, image_y, real_x, real_y, target_z):
-    return run_grasp_debug_dashboard(
+    summary, json_path = run_grasp_debug_dashboard(
         "detect", target_object, image_x, image_y, real_x, real_y, target_z, False
     )
+    detected_x, detected_y = detected_image_coords(latest_grasp_debug_record())
+    x_update = gr.update(value=detected_x) if detected_x is not None else gr.update()
+    y_update = gr.update(value=detected_y) if detected_y is not None else gr.update()
+    return summary, json_path, x_update, y_update
 
 
 def run_grasp_debug_coordinate(target_object: str, image_x, image_y, real_x, real_y, target_z):
-    return run_grasp_debug_dashboard(
+    summary, json_path = run_grasp_debug_dashboard(
         "coordinate", target_object, image_x, image_y, real_x, real_y, target_z, False
+    )
+    record = latest_grasp_debug_record()
+    detected_x, detected_y = detected_image_coords(record)
+    resolved_real_x, resolved_real_y = grasp_real_coords(record)
+    return (
+        summary,
+        json_path,
+        gr.update(value=detected_x) if detected_x is not None else gr.update(),
+        gr.update(value=detected_y) if detected_y is not None else gr.update(),
+        gr.update(value=resolved_real_x) if resolved_real_x is not None else gr.update(),
+        gr.update(value=resolved_real_y) if resolved_real_y is not None else gr.update(),
     )
 
 
@@ -3158,12 +3218,24 @@ def build_dashboard():
         detect_target_btn.click(
             run_grasp_debug_detect,
             inputs=grasp_debug_inputs,
-            outputs=[grasp_debug_status, grasp_debug_json_path],
+            outputs=[
+                grasp_debug_status,
+                grasp_debug_json_path,
+                grasp_debug_image_x,
+                grasp_debug_image_y,
+            ],
         )
         coordinate_only_btn.click(
             run_grasp_debug_coordinate,
             inputs=grasp_debug_inputs,
-            outputs=[grasp_debug_status, grasp_debug_json_path],
+            outputs=[
+                grasp_debug_status,
+                grasp_debug_json_path,
+                grasp_debug_image_x,
+                grasp_debug_image_y,
+                grasp_debug_real_x,
+                grasp_debug_real_y,
+            ],
         )
         plan_grasp_btn.click(
             run_grasp_debug_plan,
