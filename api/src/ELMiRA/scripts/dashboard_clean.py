@@ -97,6 +97,14 @@ GRASP_DEBUG_SCRIPT = (
     / "kinematic_preview"
     / "grasp_debug.py"
 )
+IK_TRACE_DUMP_SCRIPT = (
+    API_ROOT
+    / "src"
+    / "ELMiRA"
+    / "scripts"
+    / "kinematic_preview"
+    / "ik_trace_dump.py"
+)
 KINEMATIC_TEMPLATE_FILE = (
     API_ROOT
     / "src"
@@ -110,6 +118,7 @@ KINEMATIC_CAPTURED_TEMPLATE_FILE = KINEMATIC_TEMPLATE_FILE.parent / "captured_ri
 KINEMATIC_LOG_DIR = API_ROOT / "logs" / "kinematic_preview"
 FIRST_PERSON_LOG_DIR = API_ROOT / "logs" / "first_person_trials"
 GRASP_DEBUG_LOG_DIR = API_ROOT / "logs" / "grasp_debug"
+IK_TRACE_LOG_DIR = API_ROOT / "logs" / "ik_trace"
 
 CHAT_UNAVAILABLE = (
     "Chat/action service unavailable; use NJF dry-run and robot evidence fallback."
@@ -2164,6 +2173,79 @@ def run_grasp_debug_plan(target_object: str, image_x, image_y, real_x, real_y, t
     )
 
 
+def ik_trace_latest_json_path() -> str:
+    return str(IK_TRACE_LOG_DIR / "latest_ik_trace.json")
+
+
+def ik_trace_summary(record: Optional[Dict[str, Any]], fallback: str = "") -> str:
+    if not record:
+        return fallback or "No IK trace has been generated yet."
+    if record.get("summary_text"):
+        return str(record.get("summary_text"))
+    coord = record.get("coordinate_transfer_result") or {}
+    ik_response = record.get("ik_response") or {}
+    filtering = record.get("command_filtering") or {}
+    final_command = record.get("final_command") or {}
+    lines = [
+        "IK Trace Dump, No Motion",
+        f"Status: {record.get('status', 'unknown')}",
+        f"Action: {record.get('action_type', 'grasp')}",
+        f"Target: {record.get('target_object', 'red object')}",
+        f"Real target: x={coord.get('real_x')}, y={coord.get('real_y')}, z={coord.get('target_z')}",
+        f"IK status: {ik_response.get('status', 'unknown')}",
+        f"Dropped joints: {filtering.get('dropped_joints', [])}",
+        f"Hand actions if executed: {final_command.get('hand_action_sequence', [])}",
+        f"XL-320 wrist IDs 31/33 will be commanded: {final_command.get('xl320_wrist_ids_31_33_will_be_commanded')}",
+        f"Diagnosis: {record.get('diagnosis', '')}",
+        f"Log: {ik_trace_latest_json_path()}",
+    ]
+    return "\n".join(lines)
+
+
+def run_ik_trace_dump_dashboard(target_object: str, image_x, image_y, real_x, real_y, target_z):
+    if image_coords_need_detection_fallback(image_x, image_y):
+        latest_x, latest_y = detected_image_coords(latest_grasp_debug_record())
+        if latest_x is not None and latest_y is not None:
+            image_x, image_y = latest_x, latest_y
+    command = [
+        sys.executable,
+        str(IK_TRACE_DUMP_SCRIPT),
+        "--action-type",
+        "grasp",
+        "--target-object",
+        target_object or "red object",
+        "--target-z",
+        str(float(target_z or 0.70)),
+        "--use-coordinate",
+    ]
+    if image_x is not None:
+        command.extend(["--image-x", str(float(image_x))])
+    if image_y is not None:
+        command.extend(["--image-y", str(float(image_y))])
+    if real_x is not None:
+        command.extend(["--real-x", str(float(real_x))])
+    if real_y is not None:
+        command.extend(["--real-y", str(float(real_y))])
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=12,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else None
+        status = output[-1800:] if completed.returncode != 0 else "IK trace dumped."
+    except subprocess.TimeoutExpired:
+        status = "IK trace dump timed out."
+        record = None
+    except Exception as exc:
+        status = f"IK trace dump failed: {sanitize_text(exc)}"
+        record = None
+    return ik_trace_summary(record, status), ik_trace_latest_json_path()
+
+
 def direct_control_service_available() -> bool:
     result = run_env_command("rosservice list", timeout_s=3)
     return (
@@ -2790,6 +2872,7 @@ def build_dashboard():
                 detect_target_btn = gr.Button("1. Detect Target Only")
                 coordinate_only_btn = gr.Button("2. Coordinate Transfer Only")
                 plan_grasp_btn = gr.Button("3. Plan Grasp Only, No Motion")
+                dump_ik_trace_btn = gr.Button("Dump IK Trace, No Motion")
             with gr.Row():
                 execute_pre_grasp_only_btn = gr.Button("4. Execute Pre-Grasp Only")
                 align_wrist_only_btn = gr.Button("5. Align Wrist Only")
@@ -2807,6 +2890,11 @@ def build_dashboard():
             grasp_debug_json_path = gr.Textbox(
                 label="Grasp debug JSON log",
                 value=grasp_debug_latest_json_path(),
+                interactive=False,
+            )
+            ik_trace_json_path = gr.Textbox(
+                label="IK trace JSON log",
+                value=ik_trace_latest_json_path(),
                 interactive=False,
             )
 
@@ -3241,6 +3329,11 @@ def build_dashboard():
             run_grasp_debug_plan,
             inputs=grasp_debug_inputs,
             outputs=[grasp_debug_status, grasp_debug_json_path],
+        )
+        dump_ik_trace_btn.click(
+            run_ik_trace_dump_dashboard,
+            inputs=grasp_debug_inputs,
+            outputs=[grasp_debug_status, ik_trace_json_path],
         )
         execute_pre_grasp_only_btn.click(
             lambda target, image_x, image_y, real_x, real_y, target_z, safety: run_grasp_debug_dashboard(
