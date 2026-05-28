@@ -10,6 +10,9 @@ TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "right_arm_templ
 CAPTURED_TEMPLATE_PATH = (
     Path(__file__).resolve().parent / "templates" / "captured_right_arm_templates.json"
 )
+CAPTURED_GRASP_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent / "templates" / "captured_grasp_templates.json"
+)
 
 
 def load_templates(path: Path = TEMPLATE_PATH) -> Dict[str, Dict[str, Any]]:
@@ -18,11 +21,14 @@ def load_templates(path: Path = TEMPLATE_PATH) -> Dict[str, Dict[str, Any]]:
     templates = data.get("templates", {})
     if not isinstance(templates, dict):
         raise ValueError(f"No templates dictionary found in {path}")
-    if Path(path) == TEMPLATE_PATH and CAPTURED_TEMPLATE_PATH.exists():
-        with CAPTURED_TEMPLATE_PATH.open("r", encoding="utf-8") as handle:
-            captured = json.load(handle).get("templates", {})
-        if isinstance(captured, dict):
-            templates = {**templates, **captured}
+    if Path(path) == TEMPLATE_PATH:
+        for captured_path in (CAPTURED_TEMPLATE_PATH, CAPTURED_GRASP_TEMPLATE_PATH):
+            if not captured_path.exists():
+                continue
+            with captured_path.open("r", encoding="utf-8") as handle:
+                captured = json.load(handle).get("templates", {})
+            if isinstance(captured, dict):
+                templates = {**templates, **captured}
     return templates
 
 

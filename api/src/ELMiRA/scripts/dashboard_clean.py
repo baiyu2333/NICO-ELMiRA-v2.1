@@ -73,6 +73,14 @@ SAVE_REPLAY_TEMPLATE_SCRIPT = (
     / "kinematic_preview"
     / "save_replay_frame_as_template.py"
 )
+CAPTURE_NATURAL_GRASP_TEMPLATE_SCRIPT = (
+    API_ROOT
+    / "src"
+    / "ELMiRA"
+    / "scripts"
+    / "kinematic_preview"
+    / "capture_natural_grasp_template.py"
+)
 SAFE_PRESET_DEBUG_SCRIPT = (
     API_ROOT
     / "src"
@@ -115,10 +123,12 @@ KINEMATIC_TEMPLATE_FILE = (
     / "right_arm_templates.json"
 )
 KINEMATIC_CAPTURED_TEMPLATE_FILE = KINEMATIC_TEMPLATE_FILE.parent / "captured_right_arm_templates.json"
+CAPTURED_GRASP_TEMPLATE_FILE = KINEMATIC_TEMPLATE_FILE.parent / "captured_grasp_templates.json"
 KINEMATIC_LOG_DIR = API_ROOT / "logs" / "kinematic_preview"
 FIRST_PERSON_LOG_DIR = API_ROOT / "logs" / "first_person_trials"
 GRASP_DEBUG_LOG_DIR = API_ROOT / "logs" / "grasp_debug"
 IK_TRACE_LOG_DIR = API_ROOT / "logs" / "ik_trace"
+GRASP_TEMPLATE_LOG_DIR = API_ROOT / "logs" / "grasp_templates"
 
 CHAT_UNAVAILABLE = (
     "Chat/action service unavailable; use NJF dry-run and robot evidence fallback."
@@ -1021,6 +1031,13 @@ def kinematic_template_names() -> List[str]:
             names.update(templates.keys())
     except Exception:
         pass
+    try:
+        data = json.loads(CAPTURED_GRASP_TEMPLATE_FILE.read_text(encoding="utf-8"))
+        templates = data.get("templates", {})
+        if isinstance(templates, dict):
+            names.update(templates.keys())
+    except Exception:
+        pass
     return sorted(names) if names else ["right_arm_pre_grasp"]
 
 
@@ -1051,6 +1068,144 @@ def refresh_captured_direct_templates():
     return gr.update(choices=[], value=None), (
         "No captured direct templates yet. Record an ELMiRA motion, save a replay frame as a template, then refresh."
     )
+
+
+def latest_captured_grasp_template_path() -> str:
+    return str(GRASP_TEMPLATE_LOG_DIR / "latest_captured_template.json")
+
+
+def captured_natural_grasp_template_names() -> List[str]:
+    try:
+        data = json.loads(CAPTURED_GRASP_TEMPLATE_FILE.read_text(encoding="utf-8"))
+        templates = data.get("templates", {})
+        if isinstance(templates, dict):
+            return sorted(templates.keys())
+    except Exception:
+        pass
+    return []
+
+
+def natural_grasp_capture_summary(record: Optional[Dict[str, Any]], fallback: str = "") -> str:
+    if not record:
+        return fallback or "No natural grasp template captured yet."
+    if record.get("summary_text"):
+        return str(record.get("summary_text"))
+    template = record.get("template") or {}
+    return (
+        f"Status: {record.get('status', 'unknown')}\n"
+        f"Template: {record.get('template_name', template.get('name', 'unknown'))}\n"
+        f"Stage: {record.get('action_stage', template.get('action_stage', 'unknown'))}\n"
+        f"Target: {record.get('target_object', template.get('target_object', 'red object'))}\n"
+        f"Estimated right_hand_xyz: {record.get('estimated_right_hand_xyz', template.get('estimated_right_hand_xyz', {}))}\n"
+        f"Estimated right_wrist_xyz: {record.get('estimated_right_wrist_xyz', template.get('estimated_right_wrist_xyz', {}))}\n"
+        f"IK seed ready: {record.get('ik_seed_ready', template.get('ik_seed_ready', False))}\n"
+        f"Motion commanded: {record.get('real_robot_motion_commanded', False)}\n"
+        f"Message: {record.get('message', '')}\n"
+        f"Latest JSON: {latest_captured_grasp_template_path()}"
+    )
+
+
+def run_capture_natural_grasp_template_dashboard(
+    template_name: str,
+    target_object: str,
+    action_stage: str,
+    notes: str,
+    allow_overwrite: bool,
+):
+    command = [
+        sys.executable,
+        str(CAPTURE_NATURAL_GRASP_TEMPLATE_SCRIPT),
+        "capture",
+        "--template-name",
+        template_name or "",
+        "--target-object",
+        target_object or "red object",
+        "--action-stage",
+        action_stage or "pre_grasp",
+        "--notes",
+        notes or "",
+    ]
+    if allow_overwrite:
+        command.append("--allow-overwrite")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else None
+        if completed.returncode != 0 and not record:
+            status = output[-1200:]
+        else:
+            status = natural_grasp_capture_summary(record, output[-1200:])
+    except subprocess.TimeoutExpired:
+        record = None
+        status = "Natural grasp capture timed out."
+    except Exception as exc:
+        record = None
+        status = f"Natural grasp capture failed: {sanitize_text(exc)}"
+    image_path = (record or {}).get("preview_image_path", "")
+    image_value = image_path if image_path and Path(image_path).exists() else None
+    return status, image_value, latest_captured_grasp_template_path()
+
+
+def run_preview_captured_natural_grasp_template_dashboard(template_name: str):
+    command = [
+        sys.executable,
+        str(CAPTURE_NATURAL_GRASP_TEMPLATE_SCRIPT),
+        "preview",
+        "--template-name",
+        template_name or "",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else None
+        status = natural_grasp_capture_summary(record, output[-1200:])
+    except subprocess.TimeoutExpired:
+        record = None
+        status = "Captured template preview timed out."
+    except Exception as exc:
+        record = None
+        status = f"Captured template preview failed: {sanitize_text(exc)}"
+    image_path = (record or {}).get("preview_image_path", "")
+    image_value = image_path if image_path and Path(image_path).exists() else None
+    return status, image_value, latest_captured_grasp_template_path()
+
+
+def run_captured_template_seed_plan_dashboard(template_name: str):
+    command = [
+        sys.executable,
+        str(CAPTURE_NATURAL_GRASP_TEMPLATE_SCRIPT),
+        "seed-plan",
+        "--template-name",
+        template_name or "",
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(API_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=6,
+        )
+        output = sanitize_text((completed.stdout or "") + (completed.stderr or ""))
+        record = json.loads(completed.stdout or "{}") if completed.stdout else None
+        status = natural_grasp_capture_summary(record, output[-1200:])
+    except subprocess.TimeoutExpired:
+        status = "Captured template seed-plan timed out."
+    except Exception as exc:
+        status = f"Captured template seed-plan failed: {sanitize_text(exc)}"
+    return status, None, str(GRASP_TEMPLATE_LOG_DIR / "latest_captured_template_seed_plan.json")
 
 
 def kinematic_preview_summary(record: Optional[Dict[str, Any]], status: str) -> str:
@@ -2671,6 +2826,44 @@ def build_dashboard():
                 live_hand_xyz = gr.Textbox(label="Estimated right_hand_xyz", interactive=False)
                 live_timestamp = gr.Textbox(label="Latest update timestamp", interactive=False)
 
+        with gr.Accordion("Capture Natural Grasp Template", open=False):
+            gr.Markdown(
+                "Capture the current supervised NICO right-arm pose as a reusable grasp template. "
+                "This reads joint states only and sends no robot motion command."
+            )
+            with gr.Row():
+                natural_template_name = gr.Textbox(
+                    label="Template name",
+                    value="captured_natural_grasp_red_object",
+                )
+                natural_template_target = gr.Textbox(label="Target object", value="red object")
+                natural_template_stage = gr.Dropdown(
+                    ["pre_grasp", "approach", "close", "lift"],
+                    label="Action stage",
+                    value="pre_grasp",
+                )
+            natural_template_notes = gr.Textbox(label="Notes", value="", lines=2)
+            natural_template_overwrite = gr.Checkbox(
+                label="Allow overwrite existing template",
+                value=False,
+            )
+            with gr.Row():
+                capture_natural_template_btn = gr.Button("Capture Current Pose as Template")
+                preview_natural_template_btn = gr.Button("Preview Captured Template")
+                seed_natural_template_btn = gr.Button("Use Captured Template as IK Seed, Plan Only")
+            natural_template_status = gr.Textbox(
+                label="Capture status",
+                value="No natural grasp template captured yet.",
+                lines=10,
+                interactive=False,
+            )
+            natural_template_image = gr.Image(label="Captured template preview", interactive=False)
+            natural_template_json_path = gr.Textbox(
+                label="Captured template JSON",
+                value=latest_captured_grasp_template_path(),
+                interactive=False,
+            )
+
         with gr.Accordion("Live Recording / Replay", open=False):
             gr.Markdown(
                 "Record joint states during an existing ELMiRA action, then replay the motion in the stick viewer. "
@@ -3136,6 +3329,27 @@ def build_dashboard():
         live_refresh_btn.click(
             refresh_live_pose_dashboard,
             outputs=[live_status, live_image, live_hand_xyz, live_timestamp],
+        )
+        capture_natural_template_btn.click(
+            run_capture_natural_grasp_template_dashboard,
+            inputs=[
+                natural_template_name,
+                natural_template_target,
+                natural_template_stage,
+                natural_template_notes,
+                natural_template_overwrite,
+            ],
+            outputs=[natural_template_status, natural_template_image, natural_template_json_path],
+        )
+        preview_natural_template_btn.click(
+            run_preview_captured_natural_grasp_template_dashboard,
+            inputs=natural_template_name,
+            outputs=[natural_template_status, natural_template_image, natural_template_json_path],
+        )
+        seed_natural_template_btn.click(
+            run_captured_template_seed_plan_dashboard,
+            inputs=natural_template_name,
+            outputs=[natural_template_status, natural_template_image, natural_template_json_path],
         )
         start_direct_control_btn.click(
             start_direct_control,
