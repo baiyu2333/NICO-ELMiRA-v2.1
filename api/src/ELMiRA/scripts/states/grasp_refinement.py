@@ -32,6 +32,10 @@ from elmira.srv import (
     NJFPredictAction,
 )
 from utils.constants import clamp_to_workspace, get_arm_orientation, get_touch_orientation
+from states.action_planner import (
+    clamp_positions_to_captured_grasp_seed,
+    load_captured_grasp_seed,
+)
 
 
 def _bounded_float_param(name, default_value, min_value, max_value):
@@ -50,6 +54,49 @@ def _bounded_float_param(name, default_value, min_value, max_value):
             f"[{min_value:.3f}, {max_value:.3f}], clamped to {clamped:.3f}"
         )
     return clamped
+
+
+def _apply_final_contact_joint_nudge(joint_names, joint_positions):
+    """Apply a small bounded right-arm joint correction for final contact only."""
+    nudges = {
+        "r_shoulder_y": _bounded_float_param(
+            "/elmira/contact_nudge_r_shoulder_y_rad",
+            0.0,
+            -0.25,
+            0.10,
+        ),
+        "r_elbow_y": _bounded_float_param(
+            "/elmira/contact_nudge_r_elbow_y_rad",
+            0.0,
+            -0.20,
+            0.20,
+        ),
+    }
+    hard_limits = {
+        "r_shoulder_y": (0.0, 0.70),
+        "r_elbow_y": (-2.15, -1.10),
+    }
+    changes = []
+    adjusted = list(joint_positions)
+    for joint_name, delta in nudges.items():
+        if abs(delta) < 1e-6 or joint_name not in joint_names:
+            continue
+        idx = joint_names.index(joint_name)
+        old_value = adjusted[idx]
+        new_value = old_value + delta
+        min_value, max_value = hard_limits[joint_name]
+        clamped = min(max(new_value, min_value), max_value)
+        adjusted[idx] = clamped
+        changes.append(
+            f"{joint_name}: {old_value:.3f} -> {clamped:.3f} "
+            f"(delta {delta:+.3f})"
+        )
+    if changes:
+        rospy.logwarn(
+            "GraspRefinement: final-contact joint nudge applied: "
+            + "; ".join(changes)
+        )
+    return adjusted
 
 
 class GraspRefinement(smach.StateMachine):
@@ -108,6 +155,31 @@ class GraspRefinement(smach.StateMachine):
             # Step 3: Solve IK for refined poses
             def ik_request_cb(userdata, request):
                 initial_position = userdata.motion_init_pose[userdata.planning_group]
+                if userdata.planning_group == "r_arm" and bool(
+                    rospy.get_param("/elmira/use_captured_grasp_seed", True)
+                ):
+                    seed_template = rospy.get_param(
+                        "/elmira/captured_grasp_seed_template",
+                        "natural_red_grasp_current",
+                    )
+                    try:
+                        captured_seed = load_captured_grasp_seed(
+                            seed_template, initial_position
+                        )
+                        initial_position = {
+                            "names": captured_seed["names"],
+                            "positions": captured_seed["positions"],
+                        }
+                        rospy.loginfo(
+                            "GraspRefinement: using captured grasp IK seed "
+                            f"'{captured_seed['template_name']}' with joints "
+                            f"{captured_seed['names']}"
+                        )
+                    except Exception as exc:
+                        rospy.logwarn(
+                            "GraspRefinement: captured grasp seed requested but "
+                            f"could not be loaded; using normal init pose: {exc}"
+                        )
                 request.initial_position.joint_name = initial_position["names"]
                 request.initial_position.position = initial_position["positions"]
                 return request
@@ -115,10 +187,71 @@ class GraspRefinement(smach.StateMachine):
             def ik_response_cb(userdata, response):
                 trajectory = []
                 for i, position in enumerate(response.positions):
+                    joint_names = list(position.joint_name)
+                    joint_positions = list(position.position)
+                    if userdata.planning_group == "r_arm" and bool(
+                        rospy.get_param("/elmira/use_captured_grasp_seed_guard", True)
+                    ):
+                        seed_template = rospy.get_param(
+                            "/elmira/captured_grasp_seed_template",
+                            "natural_red_grasp_current",
+                        )
+                        max_delta = float(
+                            rospy.get_param(
+                                "/elmira/captured_grasp_seed_max_delta_rad",
+                                0.45,
+                            )
+                        )
+                        per_joint_delta = None
+                        if i == 1:
+                            # The contact pose needs to bend into an L-like arm
+                            # shape. Keep lateral/roll joints conservative, but
+                            # allow shoulder pitch and elbow pitch to move farther
+                            # from the high pre-grasp captured seed.
+                            per_joint_delta = {
+                                "r_shoulder_y": _bounded_float_param(
+                                    "/elmira/contact_seed_guard_r_shoulder_y_delta_rad",
+                                    0.85,
+                                    0.45,
+                                    1.20,
+                                ),
+                                "r_elbow_y": _bounded_float_param(
+                                    "/elmira/contact_seed_guard_r_elbow_y_delta_rad",
+                                    0.75,
+                                    0.45,
+                                    1.20,
+                                ),
+                                "r_shoulder_z": max_delta,
+                                "r_arm_x": max_delta,
+                            }
+                        try:
+                            joint_positions, clamp_changes = (
+                                clamp_positions_to_captured_grasp_seed(
+                                    seed_template,
+                                    joint_names,
+                                    joint_positions,
+                                    max_delta,
+                                    per_joint_delta,
+                                )
+                            )
+                            if clamp_changes:
+                                rospy.logwarn(
+                                    "GraspRefinement: clamped refined IK output near "
+                                    f"captured seed '{seed_template}': {clamp_changes}"
+                                )
+                        except Exception as exc:
+                            rospy.logwarn(
+                                "GraspRefinement: captured seed guard requested but "
+                                f"could not be applied: {exc}"
+                            )
+                    if userdata.planning_group == "r_arm" and i == 1:
+                        joint_positions = _apply_final_contact_joint_nudge(
+                            joint_names, joint_positions
+                        )
                     step = {
                         userdata.planning_group: {
-                            "names": position.joint_name,
-                            "positions": position.position,
+                            "names": joint_names,
+                            "positions": joint_positions,
                         },
                         "planning_group": userdata.planning_group,
                     }
@@ -435,13 +568,12 @@ class PlanRefinedGrasp(smach.State):
         hover_z_offset = _bounded_float_param(
             "/elmira/grasp_hover_z_offset", 0.06, 0.02, 0.20
         )
-        default_contact_offset = (
-            float(rospy.get_param("/elmira/right_touch_z_offset", -0.075))
-            if is_right
-            else 0.02
-        )
+        # Grasp contact must stay above the table. Reusing the old touch offset
+        # could push the hand below the table plane and cause the hand/table
+        # collision seen in first-person trial frames.
+        default_contact_offset = 0.005 if is_right else 0.02
         contact_z_offset = _bounded_float_param(
-            "/elmira/grasp_contact_z_offset", default_contact_offset, -0.12, hover_z_offset
+            "/elmira/grasp_contact_z_offset", default_contact_offset, 0.005, hover_z_offset
         )
         lift_z_offset = _bounded_float_param(
             "/elmira/grasp_lift_z_offset", 0.12, max(0.05, hover_z_offset), 0.30

@@ -465,6 +465,18 @@ def launch_robot(
         "source activate.bash 2>/dev/null || true; "
         "source devel/setup.bash 2>/dev/null || true; "
         "export PYTHONUNBUFFERED=1; "
+        "rosparam set /elmira/use_captured_grasp_seed true; "
+        "rosparam set /elmira/use_captured_grasp_stage false; "
+        "rosparam set /elmira/use_captured_grasp_seed_guard true; "
+        "rosparam set /elmira/captured_grasp_seed_max_delta_rad 0.45; "
+        "rosparam set /elmira/captured_grasp_seed_template natural_red_grasp_current; "
+        "rosparam set /elmira/right_grasp_x_bias -0.055; "
+        "rosparam set /elmira/right_grasp_y_bias 0.027; "
+        "rosparam set /elmira/grasp_contact_z_offset 0.005; "
+        "rosparam set /elmira/contact_seed_guard_r_shoulder_y_delta_rad 0.85; "
+        "rosparam set /elmira/contact_seed_guard_r_elbow_y_delta_rad 0.75; "
+        "rosparam set /elmira/contact_nudge_r_shoulder_y_rad -0.06; "
+        "rosparam set /elmira/contact_nudge_r_elbow_y_rad 0.0; "
         "rosrun elmira state_machine.py"
     )
 
@@ -1042,21 +1054,22 @@ def kinematic_template_names() -> List[str]:
 
 
 def captured_direct_template_names() -> List[str]:
-    try:
-        data = json.loads(KINEMATIC_CAPTURED_TEMPLATE_FILE.read_text(encoding="utf-8"))
-        templates = data.get("templates", {})
-        if isinstance(templates, dict):
-            ready = [
-                name
-                for name, template in templates.items()
-                if isinstance(template, dict)
-                and template.get("direct_execution_ready")
-                and template.get("commandable_right_arm_joint_positions_rad")
-            ]
-            return sorted(ready)
-    except Exception:
-        pass
-    return []
+    ready = set()
+    for template_path in (KINEMATIC_CAPTURED_TEMPLATE_FILE, CAPTURED_GRASP_TEMPLATE_FILE):
+        try:
+            data = json.loads(template_path.read_text(encoding="utf-8"))
+            templates = data.get("templates", {})
+            if isinstance(templates, dict):
+                ready.update(
+                    name
+                    for name, template in templates.items()
+                    if isinstance(template, dict)
+                    and template.get("direct_execution_ready")
+                    and template.get("commandable_right_arm_joint_positions_rad")
+                )
+        except Exception:
+            pass
+    return sorted(ready)
 
 
 def refresh_captured_direct_templates():
@@ -2348,6 +2361,9 @@ def ik_trace_summary(record: Optional[Dict[str, Any]], fallback: str = "") -> st
         f"Target: {record.get('target_object', 'red object')}",
         f"Real target: x={coord.get('real_x')}, y={coord.get('real_y')}, z={coord.get('target_z')}",
         f"IK status: {ik_response.get('status', 'unknown')}",
+        f"Captured template used as seed: {record.get('captured_template_used_as_seed', False)}",
+        f"Seed template: {record.get('seed_template_name')}",
+        f"Seed joints: {record.get('seed_joint_names', [])}",
         f"Dropped joints: {filtering.get('dropped_joints', [])}",
         f"Hand actions if executed: {final_command.get('hand_action_sequence', [])}",
         f"XL-320 wrist IDs 31/33 will be commanded: {final_command.get('xl320_wrist_ids_31_33_will_be_commanded')}",
@@ -2357,7 +2373,7 @@ def ik_trace_summary(record: Optional[Dict[str, Any]], fallback: str = "") -> st
     return "\n".join(lines)
 
 
-def run_ik_trace_dump_dashboard(target_object: str, image_x, image_y, real_x, real_y, target_z):
+def run_ik_trace_dump_dashboard(target_object: str, image_x, image_y, real_x, real_y, target_z, seed_template: str = ""):
     if image_coords_need_detection_fallback(image_x, image_y):
         latest_x, latest_y = detected_image_coords(latest_grasp_debug_record())
         if latest_x is not None and latest_y is not None:
@@ -2373,6 +2389,9 @@ def run_ik_trace_dump_dashboard(target_object: str, image_x, image_y, real_x, re
         str(float(target_z or 0.70)),
         "--use-coordinate",
     ]
+    seed_template = (seed_template or "natural_red_grasp_current").strip()
+    if seed_template:
+        command.extend(["--seed-template", seed_template])
     if image_x is not None:
         command.extend(["--image-x", str(float(image_x))])
     if image_y is not None:
@@ -3061,11 +3080,17 @@ def build_dashboard():
                 grasp_debug_image_y = gr.Number(label="Image y", value=None, precision=4)
                 grasp_debug_real_x = gr.Number(label="Real x (m)", value=0.20, precision=3)
                 grasp_debug_real_y = gr.Number(label="Real y (m)", value=-0.08, precision=3)
+            grasp_debug_seed_template = gr.Textbox(
+                label="Captured seed template",
+                value="natural_red_grasp_current",
+                placeholder="natural_red_grasp_current",
+            )
             with gr.Row():
                 detect_target_btn = gr.Button("1. Detect Target Only")
                 coordinate_only_btn = gr.Button("2. Coordinate Transfer Only")
                 plan_grasp_btn = gr.Button("3. Plan Grasp Only, No Motion")
                 dump_ik_trace_btn = gr.Button("Dump IK Trace, No Motion")
+                dump_ik_trace_seed_btn = gr.Button("Dump IK Trace With Captured Seed")
             with gr.Row():
                 execute_pre_grasp_only_btn = gr.Button("4. Execute Pre-Grasp Only")
                 align_wrist_only_btn = gr.Button("5. Align Wrist Only")
@@ -3547,6 +3572,19 @@ def build_dashboard():
         dump_ik_trace_btn.click(
             run_ik_trace_dump_dashboard,
             inputs=grasp_debug_inputs,
+            outputs=[grasp_debug_status, ik_trace_json_path],
+        )
+        dump_ik_trace_seed_btn.click(
+            lambda target, image_x, image_y, real_x, real_y, target_z, seed_template: run_ik_trace_dump_dashboard(
+                target,
+                image_x,
+                image_y,
+                real_x,
+                real_y,
+                target_z,
+                seed_template,
+            ),
+            inputs=grasp_debug_inputs + [grasp_debug_seed_template],
             outputs=[grasp_debug_status, ik_trace_json_path],
         )
         execute_pre_grasp_only_btn.click(

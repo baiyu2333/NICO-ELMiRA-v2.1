@@ -34,6 +34,7 @@ from utils.kinematic_trial_logger import find_api_root, write_json
 API_ROOT = find_api_root(__file__)
 LOG_DIR = API_ROOT / "logs" / "grasp_templates"
 LATEST_CAPTURE_JSON = LOG_DIR / "latest_captured_template.json"
+LATEST_XL320_COMMAND_JSON = LOG_DIR / "latest_xl320_command.json"
 LATEST_PREVIEW_IMAGE = LOG_DIR / "latest_captured_template_preview.png"
 LATEST_SEED_PLAN_JSON = LOG_DIR / "latest_captured_template_seed_plan.json"
 CAPTURED_TEMPLATES_CSV = LOG_DIR / "captured_grasp_templates.csv"
@@ -64,6 +65,10 @@ CSV_FIELDS = [
     "mapped_joint_angles_deg",
     "xl320_wrist_state",
     "xl320_finger_state",
+    "latest_xl320_command_state",
+    "commanded_wrist_z_deg",
+    "commanded_wrist_x_deg",
+    "commanded_finger_state",
     "estimated_right_hand_xyz",
     "estimated_right_wrist_xyz",
     "direct_execution_ready",
@@ -267,6 +272,89 @@ def extract_xl320(raw_map: Dict[str, float], motor_ids: List[int]) -> Dict[str, 
     }
 
 
+def read_latest_xl320_command_state() -> Dict[str, Any]:
+    if not LATEST_XL320_COMMAND_JSON.exists():
+        return {
+            "status": "unavailable",
+            "message": "No latest XL-320 command log exists yet.",
+            "path": str(LATEST_XL320_COMMAND_JSON),
+            "value_type": "last_commanded_not_sensor_feedback",
+            "note": "XL-320 values are last commanded values, not sensor feedback.",
+        }
+    try:
+        data = json.loads(LATEST_XL320_COMMAND_JSON.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "message": f"Could not read latest XL-320 command log: {exc}",
+            "path": str(LATEST_XL320_COMMAND_JSON),
+            "value_type": "last_commanded_not_sensor_feedback",
+            "note": "XL-320 values are last commanded values, not sensor feedback.",
+        }
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("status", "available")
+    data.setdefault("path", str(LATEST_XL320_COMMAND_JSON))
+    data.setdefault("value_type", "last_commanded_not_sensor_feedback")
+    data.setdefault("note", "XL-320 values are last commanded values, not sensor feedback.")
+    return data
+
+
+def _command_entry(command_state: Dict[str, Any], motor_id: int) -> Dict[str, Any]:
+    latest = command_state.get("latest_by_motor_id") or {}
+    entry = latest.get(str(motor_id)) or {}
+    return entry if isinstance(entry, dict) else {}
+
+
+def _entry_deg(entry: Dict[str, Any]) -> Optional[float]:
+    value = entry.get("approximate_degree_value")
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def summarize_last_commanded_xl320(command_state: Dict[str, Any]) -> Dict[str, Any]:
+    wrist_z = _command_entry(command_state, 31)
+    wrist_x = _command_entry(command_state, 33)
+    finger_entries = {str(motor_id): _command_entry(command_state, motor_id) for motor_id in XL320_FINGER_IDS}
+    finger_positions = {
+        motor_id: {
+            "semantic_label": entry.get("semantic_label"),
+            "raw_value": entry.get("raw_value"),
+            "approximate_degree_value": entry.get("approximate_degree_value"),
+            "source_action": entry.get("source_action"),
+            "timestamp": entry.get("timestamp"),
+        }
+        for motor_id, entry in finger_entries.items()
+        if entry
+    }
+    source_actions = sorted(
+        {
+            str(entry.get("source_action"))
+            for entry in list(finger_entries.values()) + [wrist_z, wrist_x]
+            if entry and entry.get("source_action")
+        }
+    )
+    return {
+        "latest_xl320_command_state": command_state,
+        "commanded_wrist_z_deg": _entry_deg(wrist_z),
+        "commanded_wrist_x_deg": _entry_deg(wrist_x),
+        "commanded_finger_state": {
+            "status": "available" if finger_positions else "unavailable",
+            "positions": finger_positions,
+            "source_actions": source_actions,
+            "value_type": "last_commanded_not_sensor_feedback",
+            "note": "XL-320 values are last commanded values, not sensor feedback.",
+        },
+        "xl320_value_type": "last_commanded_not_sensor_feedback",
+        "xl320_feedback_available": False,
+        "xl320_note": "XL-320 values are last commanded values, not sensor feedback.",
+    }
+
+
 def estimate_pose(joint_message: Any, raw_map: Dict[str, float]) -> Dict[str, Any]:
     if joint_message is not None:
         mapped = map_joint_angles(joint_message, DEFAULT_MAPPING)
@@ -306,6 +394,8 @@ def build_template(
     right_arm = extract_right_arm(raw_map)
     wrist_state = extract_xl320(raw_map, XL320_WRIST_IDS)
     finger_state = extract_xl320(raw_map, XL320_FINGER_IDS)
+    latest_xl320_command = read_latest_xl320_command_state()
+    commanded_xl320 = summarize_last_commanded_xl320(latest_xl320_command)
     right_msg = (joint_state.get("right_state") or {}).get("_message")
     estimate = estimate_pose(right_msg, raw_map)
     mapped = estimate.get("mapped", {})
@@ -345,6 +435,13 @@ def build_template(
         "xl320_wrist_state": wrist_state,
         "xl320_finger_ids": XL320_FINGER_IDS,
         "xl320_finger_state": finger_state,
+        "latest_xl320_command_state": commanded_xl320["latest_xl320_command_state"],
+        "commanded_wrist_z_deg": commanded_xl320["commanded_wrist_z_deg"],
+        "commanded_wrist_x_deg": commanded_xl320["commanded_wrist_x_deg"],
+        "commanded_finger_state": commanded_xl320["commanded_finger_state"],
+        "xl320_value_type": commanded_xl320["xl320_value_type"],
+        "xl320_feedback_available": commanded_xl320["xl320_feedback_available"],
+        "xl320_note": commanded_xl320["xl320_note"],
         "estimated_right_hand_xyz": preview.get("estimated_right_hand_xyz", {}),
         "estimated_right_wrist_xyz": preview.get("estimated_right_wrist_xyz", {}),
         "preview_image_path": str(LATEST_PREVIEW_IMAGE) if preview else "",
@@ -365,6 +462,13 @@ def build_template(
         "mapped_joint_angles_deg": mapped.get("mapped_joint_angles_deg", {}),
         "xl320_wrist_state": wrist_state,
         "xl320_finger_state": finger_state,
+        "latest_xl320_command_state": commanded_xl320["latest_xl320_command_state"],
+        "commanded_wrist_z_deg": commanded_xl320["commanded_wrist_z_deg"],
+        "commanded_wrist_x_deg": commanded_xl320["commanded_wrist_x_deg"],
+        "commanded_finger_state": commanded_xl320["commanded_finger_state"],
+        "xl320_value_type": commanded_xl320["xl320_value_type"],
+        "xl320_feedback_available": commanded_xl320["xl320_feedback_available"],
+        "xl320_note": commanded_xl320["xl320_note"],
         "estimated_right_hand_xyz": template["estimated_right_hand_xyz"],
         "estimated_right_wrist_xyz": template["estimated_right_wrist_xyz"],
         "preview_image_path": template["preview_image_path"],
@@ -494,6 +598,9 @@ def summary_text(record: Dict[str, Any]) -> str:
         f"Estimated right_wrist_xyz: {record.get('estimated_right_wrist_xyz', template.get('estimated_right_wrist_xyz', {}))}",
         f"XL-320 wrist state: {record.get('xl320_wrist_state', template.get('xl320_wrist_state', {})).get('status', 'unknown') if isinstance(record.get('xl320_wrist_state', template.get('xl320_wrist_state', {})), dict) else 'unknown'}",
         f"XL-320 finger state: {record.get('xl320_finger_state', template.get('xl320_finger_state', {})).get('status', 'unknown') if isinstance(record.get('xl320_finger_state', template.get('xl320_finger_state', {})), dict) else 'unknown'}",
+        f"Last commanded XL-320 wrist_z deg: {record.get('commanded_wrist_z_deg', template.get('commanded_wrist_z_deg'))}",
+        f"Last commanded XL-320 wrist_x deg: {record.get('commanded_wrist_x_deg', template.get('commanded_wrist_x_deg'))}",
+        "XL-320 command note: last commanded values, not sensor feedback.",
         f"Direct replay template: {template.get('direct_replay_template', False)}",
         f"IK seed ready: {record.get('ik_seed_ready', template.get('ik_seed_ready', False))}",
         f"Motion commanded: {record.get('real_robot_motion_commanded', False)}",

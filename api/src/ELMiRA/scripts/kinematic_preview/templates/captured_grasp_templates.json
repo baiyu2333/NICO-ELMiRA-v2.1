@@ -1,0 +1,122 @@
+{
+  "note": "Captured natural grasp templates. Read-only capture; do not send directly to motors.",
+  "templates": {
+    "natural_red_grasp_current": {
+      "action_stage": "pre_grasp",
+      "action_type": "grasp_attempt",
+      "arm_used": "right",
+      "commandable_right_arm_joint_positions_rad": {
+        "r_arm_x": 0.43493604959698695,
+        "r_elbow_y": -1.7484708446479194,
+        "r_shoulder_y": 0.10663961729685355,
+        "r_shoulder_z": 0.2907718533822553
+      },
+      "commanded_finger_state": {
+        "note": "XL-320 values are last commanded values, not sensor feedback.",
+        "positions": {},
+        "source_actions": [],
+        "status": "unavailable",
+        "value_type": "last_commanded_not_sensor_feedback"
+      },
+      "commanded_wrist_x_deg": null,
+      "commanded_wrist_z_deg": null,
+      "description": "Natural grasp pose captured from current NICO joint states at stage pre_grasp.",
+      "direct_execution_ready": true,
+      "direct_replay_template": true,
+      "estimated_right_hand_xyz": {
+        "x": 0.2532,
+        "y": -0.2115,
+        "z": 0.191
+      },
+      "estimated_right_wrist_xyz": {
+        "x": 0.1867,
+        "y": -0.2092,
+        "z": 0.2353
+      },
+      "hand_state": "neutral",
+      "ik_seed_joint_names": [
+        "r_shoulder_z",
+        "r_shoulder_y",
+        "r_arm_x",
+        "r_elbow_y"
+      ],
+      "ik_seed_joint_positions": [
+        0.2907718533822553,
+        0.10663961729685355,
+        0.43493604959698695,
+        -1.7484708446479194
+      ],
+      "ik_seed_ready": true,
+      "joint_angles_deg": {
+        "right_elbow_pitch": 45.081,
+        "right_shoulder_pitch": 11.214,
+        "right_shoulder_roll": -6.664
+      },
+      "latest_xl320_command_state": {
+        "message": "No latest XL-320 command log exists yet.",
+        "note": "XL-320 values are last commanded values, not sensor feedback.",
+        "path": "api/logs/grasp_templates/latest_xl320_command.json",
+        "status": "unavailable",
+        "value_type": "last_commanded_not_sensor_feedback"
+      },
+      "missing_right_arm_joints": [
+        "r_wrist_z",
+        "r_wrist_x"
+      ],
+      "name": "natural_red_grasp_current",
+      "notes": "recaptured current natural grasp pose with XL-320 last-command fields enabled; no robot motion commanded",
+      "preview_image_path": "/home/baiyuzhe/catkin_ws/src/NICO-software/api/logs/grasp_templates/latest_captured_template_preview.png",
+      "raw_right_arm_joint_positions_rad": {
+        "r_arm_x": 0.43493604959698695,
+        "r_elbow_y": -1.7484708446479194,
+        "r_shoulder_y": 0.10663961729685355,
+        "r_shoulder_z": 0.2907718533822553
+      },
+      "real_robot_motion_commanded": false,
+      "safety_note": "Captured template only. Not automatically sent to robot.",
+      "source": "current_real_robot_joint_state_capture",
+      "source_joint_names": {
+        "right_elbow_pitch": "r_elbow_y",
+        "right_shoulder_pitch": "r_arm_x",
+        "right_shoulder_roll": "r_shoulder_z"
+      },
+      "target_object": "red object",
+      "timestamp": "2026-05-28T08:57:51Z",
+      "xl320_feedback_available": false,
+      "xl320_finger_ids": [
+        34,
+        35,
+        36,
+        37
+      ],
+      "xl320_finger_state": {
+        "missing_motor_ids": [
+          34,
+          35,
+          36,
+          37
+        ],
+        "note": "No read-only XL-320 state topic was available; only arm joint state was captured.",
+        "positions": {},
+        "source_names": {},
+        "status": "unavailable"
+      },
+      "xl320_note": "XL-320 values are last commanded values, not sensor feedback.",
+      "xl320_value_type": "last_commanded_not_sensor_feedback",
+      "xl320_wrist_ids": [
+        31,
+        33
+      ],
+      "xl320_wrist_state": {
+        "missing_motor_ids": [
+          31,
+          33
+        ],
+        "note": "No read-only XL-320 state topic was available; only arm joint state was captured.",
+        "positions": {},
+        "source_names": {},
+        "status": "unavailable"
+      }
+    }
+  }
+}

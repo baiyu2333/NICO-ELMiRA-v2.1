@@ -21,10 +21,13 @@ Palm Sensor Feedback:
 import time
 import threading
 import re
+import json
 import rospy
 import smach
 import nicomsg.msg
 
+from datetime import datetime
+from pathlib import Path
 from utils.constants import palm_sensor_available
 
 
@@ -37,6 +40,30 @@ GRASP_CONFIRM_TIMEOUT = 3.0
 
 # Time to wait for hand movement to complete (seconds)
 HAND_MOVE_DURATION = 1.5
+
+
+def find_api_root(start_file: str) -> Path:
+    current = Path(start_file).resolve()
+    for candidate in [current] + list(current.parents):
+        if candidate.name == "api" and (candidate / "src" / "ELMiRA").exists():
+            return candidate
+    for candidate in current.parents:
+        if candidate.name == "api":
+            return candidate
+    return current.parents[3]
+
+
+API_ROOT = find_api_root(__file__)
+XL320_COMMAND_LOG = API_ROOT / "logs" / "grasp_templates" / "latest_xl320_command.json"
+TRACKED_XL320_IDS = {31, 33, 34, 35, 36, 37}
+XL320_SEMANTIC_LABELS = {
+    31: "wrist_z",
+    33: "wrist_x",
+    34: "thumb",
+    35: "thumb",
+    36: "index",
+    37: "middle_ring",
+}
 
 
 class PalmSensorMonitor:
@@ -196,6 +223,10 @@ class HandControl(smach.State):
     def _deg_to_xl320_raw(deg: float) -> int:
         raw = int((float(deg) + 150.0) / 300.0 * 1023.0)
         return max(0, min(1023, raw))
+
+    @staticmethod
+    def _xl320_raw_to_deg(raw: int) -> float:
+        return (float(raw) / 1023.0 * 300.0) - 150.0
     
     def __init__(self):
         smach.State.__init__(
@@ -350,20 +381,20 @@ class HandControl(smach.State):
             
             # Step 1: Enable torque on ALL motors (register 24 = 1)
             for motor_id in all_motor_ids:
-                self._send_xl320_cmd(motor_id, 24, 1)
+                self._send_xl320_cmd(motor_id, 24, 1, source_action=action)
                 rospy.sleep(0.005)
             rospy.loginfo(f"HandControl: Torque enabled for XL-320 motors {all_motor_ids}")
             
             # Step 2: Set moving speed (register 32 = 150)
             for motor_id in all_motor_ids:
-                self._send_xl320_cmd(motor_id, 32, 150)
+                self._send_xl320_cmd(motor_id, 32, 150, source_action=action)
                 rospy.sleep(0.005)
             
             # Step 3: Set wrist positions (register 30 = goal position)
             for wrist_id, wrist_deg in self._left_wrist_positions.items():
                 raw_wrist = int((wrist_deg + 150.0) / 300.0 * 1023.0)
                 raw_wrist = max(0, min(1023, raw_wrist))
-                self._send_xl320_cmd(wrist_id, 30, raw_wrist)
+                self._send_xl320_cmd(wrist_id, 30, raw_wrist, source_action=action)
                 rospy.sleep(0.005)
             rospy.loginfo(
                 f"HandControl: Left wrist aligned for grasp {self._left_wrist_positions}"
@@ -371,7 +402,7 @@ class HandControl(smach.State):
             
             # Step 4: Set finger positions
             for motor_id in self._left_finger_ids:
-                self._send_xl320_cmd(motor_id, 30, raw_pos)
+                self._send_xl320_cmd(motor_id, 30, raw_pos, source_action=action)
                 rospy.sleep(0.005)
             
             rospy.loginfo(
@@ -395,14 +426,14 @@ class HandControl(smach.State):
                 set(list(self._right_touch_wrist_positions.keys()) + self._right_finger_ids)
             )
             for motor_id in all_motor_ids:
-                self._send_xl320_cmd(motor_id, 24, 1)
+                self._send_xl320_cmd(motor_id, 24, 1, source_action=action)
                 rospy.sleep(0.005)
             for motor_id in all_motor_ids:
-                self._send_xl320_cmd(motor_id, 32, 150)
+                self._send_xl320_cmd(motor_id, 32, 150, source_action=action)
                 rospy.sleep(0.005)
             self._align_right_touch_wrist_xl320()
             for motor_id in self._right_finger_ids:
-                self._send_xl320_cmd(motor_id, 30, raw_pos)
+                self._send_xl320_cmd(motor_id, 30, raw_pos, source_action=action)
                 rospy.sleep(0.005)
             rospy.loginfo(
                 f"HandControl: XL-320 swapped right hand {action} -> "
@@ -419,15 +450,15 @@ class HandControl(smach.State):
             return
         all_motor_ids = sorted(self._right_touch_wrist_positions.keys())
         for motor_id in all_motor_ids:
-            self._send_xl320_cmd(motor_id, 24, 1)
+            self._send_xl320_cmd(motor_id, 24, 1, source_action="touch_wrist")
             rospy.sleep(0.005)
         for motor_id in all_motor_ids:
-            self._send_xl320_cmd(motor_id, 32, 120)
+            self._send_xl320_cmd(motor_id, 32, 120, source_action="touch_wrist")
             rospy.sleep(0.005)
         commanded = {}
         for wrist_id, wrist_deg in self._right_touch_wrist_positions.items():
             raw_wrist = self._deg_to_xl320_raw(wrist_deg)
-            self._send_xl320_cmd(wrist_id, 30, raw_wrist)
+            self._send_xl320_cmd(wrist_id, 30, raw_wrist, source_action="touch_wrist")
             commanded[wrist_id] = {"deg": wrist_deg, "raw": raw_wrist}
             rospy.sleep(0.005)
         rospy.loginfo(
@@ -436,13 +467,63 @@ class HandControl(smach.State):
             self._right_touch_hold_sec,
         )
     
-    def _send_xl320_cmd(self, motor_id: int, register: int, value: int):
+    def _log_xl320_cmd(self, motor_id: int, register: int, value: int, source_action: str = "unknown"):
+        """Record the latest commanded XL-320 value for later template capture.
+
+        This is last-commanded state only. XL-320 feedback is not available here.
+        """
+        if int(motor_id) not in TRACKED_XL320_IDS:
+            return
+        timestamp = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        approximate_degree_value = (
+            round(self._xl320_raw_to_deg(value), 3) if int(register) == 30 else None
+        )
+        entry = {
+            "timestamp": timestamp,
+            "motor_id": int(motor_id),
+            "register": int(register),
+            "raw_value": int(value),
+            "approximate_degree_value": approximate_degree_value,
+            "semantic_label": XL320_SEMANTIC_LABELS.get(int(motor_id), "unknown"),
+            "source_action": source_action or "unknown",
+            "value_type": "last_commanded_not_sensor_feedback",
+            "note": "XL-320 values are last commanded values, not sensor feedback.",
+        }
+        try:
+            XL320_COMMAND_LOG.parent.mkdir(parents=True, exist_ok=True)
+            if XL320_COMMAND_LOG.exists():
+                data = json.loads(XL320_COMMAND_LOG.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            else:
+                data = {}
+            latest_by_motor = data.get("latest_by_motor_id") or {}
+            latest_by_motor[str(int(motor_id))] = entry
+            history = data.get("recent_commands") or []
+            history.append(entry)
+            data.update(
+                {
+                    "timestamp": timestamp,
+                    "latest_command": entry,
+                    "latest_by_motor_id": latest_by_motor,
+                    "recent_commands": history[-80:],
+                    "tracked_motor_ids": sorted(TRACKED_XL320_IDS),
+                    "value_type": "last_commanded_not_sensor_feedback",
+                    "note": "XL-320 values are last commanded values, not sensor feedback.",
+                }
+            )
+            XL320_COMMAND_LOG.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception as exc:
+            rospy.logwarn("HandControl: failed to log XL-320 command: %s", exc)
+
+    def _send_xl320_cmd(self, motor_id: int, register: int, value: int, source_action: str = "unknown"):
         """Send a single XL-320 command via the Motion node's ROS topic."""
         msg = nicomsg.msg.sff()
         msg.param1 = str(motor_id)
         msg.param2 = float(register)
         msg.param3 = float(value)
         self._pub_xl320.publish(msg)
+        self._log_xl320_cmd(motor_id, register, value, source_action)
     
 
     def _open_hand(self, side: str) -> bool:

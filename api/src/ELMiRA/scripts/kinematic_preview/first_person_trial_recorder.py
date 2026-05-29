@@ -146,12 +146,88 @@ def as_float_or_none(value: Any) -> Optional[float]:
         return None
 
 
-def robot_touch_tuning_fields(action_type: str) -> Dict[str, Any]:
-    if str(action_type or "").lower() != "touch":
+def robot_trial_tuning_fields(action_type: str) -> Dict[str, Any]:
+    action = str(action_type or "").lower()
+    if action in ("grasp", "grab", "pick", "take", "grasp_attempt"):
+        x_bias = as_float_or_none(ros_param_value("/elmira/right_grasp_x_bias", -0.055))
+        y_bias = as_float_or_none(ros_param_value("/elmira/right_grasp_y_bias", 0.027))
+        seed_enabled = ros_param_value("/elmira/use_captured_grasp_seed", True)
+        seed_guard = ros_param_value("/elmira/use_captured_grasp_seed_guard", True)
+        seed_stage = ros_param_value("/elmira/use_captured_grasp_stage", False)
+        seed_template = ros_param_value(
+            "/elmira/captured_grasp_seed_template", "natural_red_grasp_current"
+        )
+        contact_z_offset = as_float_or_none(
+            ros_param_value("/elmira/grasp_contact_z_offset", 0.005)
+        )
+        hover_z_offset = as_float_or_none(
+            ros_param_value("/elmira/grasp_hover_z_offset", 0.06)
+        )
+        max_delta = as_float_or_none(
+            ros_param_value("/elmira/captured_grasp_seed_max_delta_rad", 0.45)
+        )
+        contact_shoulder_delta = as_float_or_none(
+            ros_param_value("/elmira/contact_seed_guard_r_shoulder_y_delta_rad", 0.85)
+        )
+        contact_elbow_delta = as_float_or_none(
+            ros_param_value("/elmira/contact_seed_guard_r_elbow_y_delta_rad", 0.75)
+        )
+        contact_shoulder_nudge = as_float_or_none(
+            ros_param_value("/elmira/contact_nudge_r_shoulder_y_rad", 0.0)
+        )
+        contact_elbow_nudge = as_float_or_none(
+            ros_param_value("/elmira/contact_nudge_r_elbow_y_rad", 0.0)
+        )
+        x_text = f"{x_bias:+.3f}" if x_bias is not None else "unknown"
+        y_text = f"{y_bias:+.3f}" if y_bias is not None else "unknown"
+        contact_text = (
+            f"{contact_z_offset:+.3f}" if contact_z_offset is not None else "unknown"
+        )
+        hover_text = f"{hover_z_offset:+.3f}" if hover_z_offset is not None else "unknown"
+        delta_text = f"{max_delta:.2f}" if max_delta is not None else "unknown"
+        contact_shoulder_text = (
+            f"{contact_shoulder_delta:.2f}"
+            if contact_shoulder_delta is not None
+            else "unknown"
+        )
+        contact_elbow_text = (
+            f"{contact_elbow_delta:.2f}" if contact_elbow_delta is not None else "unknown"
+        )
+        shoulder_nudge_text = (
+            f"{contact_shoulder_nudge:+.3f}"
+            if contact_shoulder_nudge is not None
+            else "unknown"
+        )
+        elbow_nudge_text = (
+            f"{contact_elbow_nudge:+.3f}"
+            if contact_elbow_nudge is not None
+            else "unknown"
+        )
         return {
             "robot_touch_z_offset_m": "not_applicable",
             "robot_touch_target_z_m": "not_applicable",
-            "trial_change_summary": "No touch-specific robot Z tuning was applied for this trial.",
+            "trial_change_summary": (
+                "Grasp tuning used right_grasp_x_bias="
+                f"{x_text} m, right_grasp_y_bias={y_text} m, "
+                f"grasp_contact_z_offset={contact_text} m, "
+                f"grasp_hover_z_offset={hover_text} m, "
+                f"captured_seed={seed_enabled} ({seed_template}), "
+                f"seed_guard={seed_guard} (+/-{delta_text} rad), "
+                f"contact_seed_guard_shoulder_y=+/-{contact_shoulder_text} rad, "
+                f"contact_seed_guard_elbow_y=+/-{contact_elbow_text} rad, "
+                f"final_contact_nudge_shoulder_y={shoulder_nudge_text} rad, "
+                f"final_contact_nudge_elbow_y={elbow_nudge_text} rad, "
+                f"captured_stage={seed_stage}."
+            ),
+        }
+
+    if action != "touch":
+        return {
+            "robot_touch_z_offset_m": "not_applicable",
+            "robot_touch_target_z_m": "not_applicable",
+            "trial_change_summary": (
+                f"No robot-side tuning change was recorded for action_type={action or 'unknown'}."
+            ),
         }
 
     table_z_base = as_float_or_none(ros_param_value("/elmira/table_z_base"))
@@ -176,8 +252,13 @@ def robot_touch_tuning_fields(action_type: str) -> Dict[str, Any]:
 
 
 def ensure_trial_change_summary(record: Dict[str, Any]) -> None:
-    if not record.get("trial_change_summary"):
-        record.update(robot_touch_tuning_fields(str(record.get("action_type", ""))))
+    current = str(record.get("trial_change_summary") or "")
+    stale_prefixes = (
+        "No touch-specific robot Z tuning",
+        "Touch Z tuning was unavailable",
+    )
+    if not current or current.startswith(stale_prefixes):
+        record.update(robot_trial_tuning_fields(str(record.get("action_type", ""))))
 
 
 def upsert_trial_csv(record: Dict[str, Any]) -> None:
@@ -425,7 +506,7 @@ def build_record(
         "x_m": x_m,
         "y_m": y_m,
         "z_m": z_m,
-        **robot_touch_tuning_fields(action_type),
+        **robot_trial_tuning_fields(action_type),
         "key_frame_index": "unknown",
         "key_frame_path": "unknown",
         "offset_direction": "unknown",

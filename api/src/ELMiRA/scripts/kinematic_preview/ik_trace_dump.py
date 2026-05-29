@@ -58,6 +58,7 @@ API_ROOT = find_api_root(__file__)
 LOG_DIR = API_ROOT / "logs" / "ik_trace"
 LATEST_TRACE_JSON = LOG_DIR / "latest_ik_trace.json"
 TRIALS_CSV = LOG_DIR / "ik_trace_trials.csv"
+CAPTURED_TEMPLATE_PATH = SCRIPT_DIR / "templates" / "captured_grasp_templates.json"
 
 DEFAULT_RIGHT_ARM_NAMES = [
     "r_shoulder_z",
@@ -85,6 +86,9 @@ CSV_FIELDS = [
     "workspace_clamped",
     "ik_available",
     "ik_succeeded",
+    "captured_template_used_as_seed",
+    "seed_template_name",
+    "seed_joint_names",
     "ik_returned_r_wrist_z",
     "ik_returned_r_wrist_x",
     "dropped_joints",
@@ -237,7 +241,83 @@ def _disabled_motor_ids() -> List[int]:
         return []
 
 
-def read_initial_position(timeout_s: float) -> Dict[str, Any]:
+def load_captured_seed_template(template_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    name = (template_name or "").strip()
+    if not name:
+        return None
+    if not CAPTURED_TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"Captured template file not found: {CAPTURED_TEMPLATE_PATH}")
+    data = json.loads(CAPTURED_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    templates = data.get("templates", {}) if isinstance(data, dict) else {}
+    if name not in templates:
+        available = ", ".join(sorted(templates.keys()))
+        raise KeyError(f"Captured template '{name}' not found. Available: {available}")
+    template = dict(templates[name])
+    raw_seed_names = template.get("ik_seed_joint_names") or list(
+        (template.get("commandable_right_arm_joint_positions_rad") or {}).keys()
+    )
+    raw_seed_positions = template.get("ik_seed_joint_positions")
+    if not raw_seed_positions:
+        positions_map = template.get("commandable_right_arm_joint_positions_rad") or {}
+        raw_seed_positions = [
+            positions_map[joint] for joint in raw_seed_names if joint in positions_map
+        ]
+    if not raw_seed_names or len(raw_seed_names) != len(raw_seed_positions):
+        raise ValueError(f"Captured template '{name}' does not contain a usable IK seed.")
+
+    # EvoIK was configured around a six-joint right-arm seed. The current
+    # physical robot only publishes the four Protocol 1.0 arm joints; old SR
+    # wrist joints r_wrist_z/r_wrist_x are disabled and later filtered out.
+    # For plan-only IK tracing, pad the missing wrist seed entries with the
+    # normal defaults so the IK request shape stays valid.
+    seed_map = {
+        joint: float(position)
+        for joint, position in zip(raw_seed_names, raw_seed_positions)
+    }
+    default_map = dict(zip(DEFAULT_RIGHT_ARM_NAMES, DEFAULT_RIGHT_ARM_POSITIONS))
+    padded_positions = [
+        seed_map.get(joint_name, default_map[joint_name])
+        for joint_name in DEFAULT_RIGHT_ARM_NAMES
+    ]
+    template["raw_resolved_seed_joint_names"] = list(raw_seed_names)
+    template["raw_resolved_seed_joint_positions"] = [
+        float(value) for value in raw_seed_positions
+    ]
+    template["resolved_seed_joint_names"] = list(DEFAULT_RIGHT_ARM_NAMES)
+    template["resolved_seed_joint_positions"] = padded_positions
+    template["seed_padding_note"] = (
+        "Captured template provides the four active right-arm joints. "
+        "Missing old SR wrist seed joints were padded with defaults for IK trace only; "
+        "they remain disabled/filtered before real execution."
+    )
+    return template
+
+
+def read_initial_position(timeout_s: float, seed_template_name: Optional[str] = None) -> Dict[str, Any]:
+    if seed_template_name:
+        try:
+            template = load_captured_seed_template(seed_template_name)
+            if template:
+                return {
+                    "source": "captured_natural_grasp_template",
+                    "status": "success",
+                    "message": "",
+                    "joint_names": template["resolved_seed_joint_names"],
+                    "joint_positions": template["resolved_seed_joint_positions"],
+                    "captured_template_used_as_seed": True,
+                    "seed_template_name": template.get("name", seed_template_name),
+                    "captured_template": template,
+                }
+        except Exception as exc:
+            return {
+                "source": "captured_natural_grasp_template",
+                "status": "unavailable",
+                "message": f"Could not load captured seed template: {exc}",
+                "joint_names": list(DEFAULT_RIGHT_ARM_NAMES),
+                "joint_positions": list(DEFAULT_RIGHT_ARM_POSITIONS),
+                "captured_template_used_as_seed": False,
+                "seed_template_name": seed_template_name,
+            }
     ok, reason = init_ros_node("elmira_ik_trace_initial")
     names = list(DEFAULT_RIGHT_ARM_NAMES)
     positions = list(DEFAULT_RIGHT_ARM_POSITIONS)
@@ -472,12 +552,15 @@ def build_trace(args: argparse.Namespace) -> Dict[str, Any]:
 
     plan = build_grasp_plan(args.action_type, target_object, float(real_x), float(real_y), float(args.target_z))
     planned_poses, ik_target_poses = planned_target_poses(args.action_type, plan)
-    initial_position = read_initial_position(args.timeout)
+    initial_position = read_initial_position(args.timeout, getattr(args, "seed_template", None))
     ik_request = {
         "planning_group": "r_arm",
         "initial_position": initial_position,
         "target_pose_list": ik_target_poses,
-        "captured_template_used_as_seed": False,
+        "captured_template_used_as_seed": bool(initial_position.get("captured_template_used_as_seed")),
+        "seed_template_name": initial_position.get("seed_template_name"),
+        "seed_joint_names": list(initial_position.get("joint_names", [])),
+        "seed_joint_positions": list(initial_position.get("joint_positions", [])),
         "motion_commanded": False,
     }
     ik_response = call_ik(ik_request, args.timeout) if ik_target_poses else {
@@ -531,6 +614,10 @@ def build_trace(args: argparse.Namespace) -> Dict[str, Any]:
         "ik_response": ik_response,
         "command_filtering": filtering,
         "final_command": final_command,
+        "captured_template_used_as_seed": bool(initial_position.get("captured_template_used_as_seed")),
+        "seed_template_name": initial_position.get("seed_template_name"),
+        "seed_joint_names": list(initial_position.get("joint_names", [])),
+        "seed_joint_positions": list(initial_position.get("joint_positions", [])),
         "selected_arm": "right",
         "image_x": image_x,
         "image_y": image_y,
@@ -583,6 +670,9 @@ def summary_text(record: Dict[str, Any]) -> str:
     lines.extend(
         [
             f"IK status: {ik_response.get('status')} {ik_response.get('message', '')}".strip(),
+            f"Captured template used as seed: {record.get('captured_template_used_as_seed')}",
+            f"Seed template: {record.get('seed_template_name')}",
+            f"Seed joints: {record.get('seed_joint_names', [])}",
             f"IK returned r_wrist_z: {record.get('ik_returned_r_wrist_z')}",
             f"IK returned r_wrist_x: {record.get('ik_returned_r_wrist_x')}",
             f"Dropped joints: {filtering.get('dropped_joints', [])}",
@@ -605,6 +695,7 @@ def main() -> int:
     parser.add_argument("--real-x", type=float, default=None)
     parser.add_argument("--real-y", type=float, default=None)
     parser.add_argument("--target-z", type=float, default=0.70)
+    parser.add_argument("--seed-template", default="")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--use-detection", action="store_true")
     parser.add_argument("--use-coordinate", action="store_true")

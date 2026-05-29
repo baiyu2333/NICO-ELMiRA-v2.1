@@ -240,16 +240,19 @@ def resolve_right_arm_execution_preset(preset_name: str, template: Dict[str, Any
     captured = template.get("commandable_right_arm_joint_positions_rad") or {}
     if not isinstance(captured, dict):
         captured = {}
-    missing = [joint_name for joint_name in COMMANDABLE_RIGHT_ARM_JOINTS if joint_name not in captured]
+    missing = [joint_name for joint_name in REQUIRED_RIGHT_ARM_BASE_JOINTS if joint_name not in captured]
     if missing:
         raise ValueError(
-            "Captured template does not include commandable right-arm joints: "
+            "Captured template does not include required right-arm base joints: "
             + ", ".join(missing)
-            + ". Record ELMiRA motion, select a replay frame, and save it as a template again."
+            + ". Capture a natural grasp template again while right-arm joint states are publishing."
         )
+    joint_names = [
+        joint_name for joint_name in COMMANDABLE_RIGHT_ARM_JOINTS if joint_name in captured
+    ]
     return {
-        "joint_names": list(COMMANDABLE_RIGHT_ARM_JOINTS),
-        "positions": [float(captured[joint_name]) for joint_name in COMMANDABLE_RIGHT_ARM_JOINTS],
+        "joint_names": joint_names,
+        "positions": [float(captured[joint_name]) for joint_name in joint_names],
         "path_time": float(template.get("path_time", 3.0)),
         "description": f"Captured direct template: {template.get('description', preset_name)}",
     }

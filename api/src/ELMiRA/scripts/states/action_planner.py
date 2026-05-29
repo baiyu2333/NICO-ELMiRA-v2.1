@@ -1,7 +1,9 @@
+import json
 import numpy as np
 import rospy
 import smach
 import smach_ros
+from pathlib import Path
 
 from geometry_msgs.msg import Pose, Point, Quaternion
 from elmira.srv import (
@@ -23,6 +25,214 @@ from utils.constants import (
     LLM_DETECT_SERVICE,
     LLM_VISIBILITY_SERVICE,
 )
+
+
+DEFAULT_RIGHT_ARM_IK_JOINTS = [
+    "r_shoulder_z",
+    "r_shoulder_y",
+    "r_arm_x",
+    "r_elbow_y",
+    "r_wrist_z",
+    "r_wrist_x",
+]
+
+
+def find_api_root(start_file):
+    current = Path(start_file).resolve()
+    for candidate in [current] + list(current.parents):
+        if candidate.name == "api" and (candidate / "src" / "ELMiRA").exists():
+            return candidate
+    raise RuntimeError("Could not locate api root")
+
+
+API_ROOT = find_api_root(__file__)
+CAPTURED_GRASP_TEMPLATES_PATH = (
+    API_ROOT
+    / "src"
+    / "ELMiRA"
+    / "scripts"
+    / "kinematic_preview"
+    / "templates"
+    / "captured_grasp_templates.json"
+)
+
+
+def load_captured_grasp_seed(template_name, fallback_initial_position):
+    """Return an IK initial_position using a captured right-arm template.
+
+    The captured template currently contains the four active Protocol 1.0 arm
+    joints. EvoIK still expects the six historical right-arm names, so missing
+    disabled wrist joints are padded from the normal initial pose. This only
+    changes the IK seed; it does not command any motion by itself.
+    """
+    name = (template_name or "").strip()
+    if not name:
+        raise ValueError("captured grasp seed template name is empty")
+    if not CAPTURED_GRASP_TEMPLATES_PATH.exists():
+        raise FileNotFoundError(
+            f"captured grasp templates not found: {CAPTURED_GRASP_TEMPLATES_PATH}"
+        )
+
+    data = json.loads(CAPTURED_GRASP_TEMPLATES_PATH.read_text(encoding="utf-8"))
+    templates = data.get("templates", {}) if isinstance(data, dict) else {}
+    if name not in templates:
+        available = ", ".join(sorted(templates.keys()))
+        raise KeyError(f"captured template '{name}' not found. Available: {available}")
+
+    template = templates[name]
+    seed_names = template.get("ik_seed_joint_names") or list(
+        (template.get("commandable_right_arm_joint_positions_rad") or {}).keys()
+    )
+    seed_positions = template.get("ik_seed_joint_positions")
+    if not seed_positions:
+        positions_map = template.get("commandable_right_arm_joint_positions_rad") or {}
+        seed_positions = [
+            positions_map[joint_name]
+            for joint_name in seed_names
+            if joint_name in positions_map
+        ]
+    if not seed_names or len(seed_names) != len(seed_positions):
+        raise ValueError(f"captured template '{name}' does not contain a usable IK seed")
+
+    fallback_names = list(fallback_initial_position.get("names") or DEFAULT_RIGHT_ARM_IK_JOINTS)
+    fallback_positions = list(fallback_initial_position.get("positions") or [])
+    fallback_map = dict(zip(fallback_names, fallback_positions))
+    seed_map = {
+        joint_name: float(position)
+        for joint_name, position in zip(seed_names, seed_positions)
+    }
+
+    resolved_names = list(fallback_names)
+    resolved_positions = [
+        seed_map.get(joint_name, fallback_map.get(joint_name, 0.0))
+        for joint_name in resolved_names
+    ]
+    missing_seed_joints = [
+        joint_name for joint_name in resolved_names if joint_name not in seed_map
+    ]
+    return {
+        "names": resolved_names,
+        "positions": resolved_positions,
+        "template_name": name,
+        "missing_seed_joints": missing_seed_joints,
+    }
+
+
+def load_captured_grasp_stage(template_name):
+    """Return the active right-arm joints from a captured template as a stage."""
+    name = (template_name or "").strip()
+    if not name:
+        raise ValueError("captured grasp stage template name is empty")
+    if not CAPTURED_GRASP_TEMPLATES_PATH.exists():
+        raise FileNotFoundError(
+            f"captured grasp templates not found: {CAPTURED_GRASP_TEMPLATES_PATH}"
+        )
+
+    data = json.loads(CAPTURED_GRASP_TEMPLATES_PATH.read_text(encoding="utf-8"))
+    templates = data.get("templates", {}) if isinstance(data, dict) else {}
+    if name not in templates:
+        available = ", ".join(sorted(templates.keys()))
+        raise KeyError(f"captured template '{name}' not found. Available: {available}")
+
+    template = templates[name]
+    positions_map = template.get("commandable_right_arm_joint_positions_rad") or {}
+    stage_names = [
+        joint_name
+        for joint_name in ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"]
+        if joint_name in positions_map
+    ]
+    if not stage_names:
+        raise ValueError(
+            f"captured template '{name}' has no active right-arm command joints"
+        )
+    return {
+        "names": stage_names,
+        "positions": [float(positions_map[joint_name]) for joint_name in stage_names],
+        "template_name": name,
+    }
+
+
+def load_captured_grasp_active_joint_map(template_name):
+    name = (template_name or "").strip()
+    if not name:
+        raise ValueError("captured grasp template name is empty")
+    if not CAPTURED_GRASP_TEMPLATES_PATH.exists():
+        raise FileNotFoundError(
+            f"captured grasp templates not found: {CAPTURED_GRASP_TEMPLATES_PATH}"
+        )
+    data = json.loads(CAPTURED_GRASP_TEMPLATES_PATH.read_text(encoding="utf-8"))
+    templates = data.get("templates", {}) if isinstance(data, dict) else {}
+    if name not in templates:
+        available = ", ".join(sorted(templates.keys()))
+        raise KeyError(f"captured template '{name}' not found. Available: {available}")
+    positions_map = templates[name].get("commandable_right_arm_joint_positions_rad") or {}
+    return {
+        joint_name: float(position)
+        for joint_name, position in positions_map.items()
+        if joint_name in ["r_shoulder_z", "r_shoulder_y", "r_arm_x", "r_elbow_y"]
+    }
+
+
+def clamp_positions_to_captured_grasp_seed(
+    template_name,
+    names,
+    positions,
+    max_delta_rad,
+    per_joint_max_delta_rad=None,
+):
+    """Clamp active right-arm IK output around the captured natural pose.
+
+    This is stronger than an IK seed. The seed only initializes EvoIK; this
+    guard prevents a valid-but-unnatural solution from flipping back to the
+    old check-mark posture.
+    """
+    max_delta = abs(float(max_delta_rad))
+    per_joint_max_delta_rad = per_joint_max_delta_rad or {}
+    if max_delta <= 0:
+        return list(positions), []
+    seed_map = load_captured_grasp_active_joint_map(template_name)
+    clamped_positions = []
+    changes = []
+    for joint_name, position in zip(names, positions):
+        value = float(position)
+        if joint_name in seed_map:
+            seed = seed_map[joint_name]
+            joint_max_delta = abs(
+                float(per_joint_max_delta_rad.get(joint_name, max_delta))
+            )
+            low = seed - joint_max_delta
+            high = seed + joint_max_delta
+            clamped = min(max(value, low), high)
+            if abs(clamped - value) > 1e-6:
+                changes.append(
+                    {
+                        "joint": joint_name,
+                        "ik": value,
+                        "seed": seed,
+                        "clamped": clamped,
+                        "max_delta_rad": joint_max_delta,
+                    }
+                )
+            value = clamped
+        clamped_positions.append(value)
+    return clamped_positions, changes
+
+
+def bounded_ros_float_param(name, default_value, min_value, max_value):
+    try:
+        value = float(rospy.get_param(name, default_value))
+    except (TypeError, ValueError):
+        rospy.logwarn(f"Invalid {name}; using {default_value}")
+        value = float(default_value)
+    if min_value > max_value:
+        min_value, max_value = max_value, min_value
+    clamped = min(max(value, min_value), max_value)
+    if clamped != value:
+        rospy.logwarn(
+            f"{name}={value:.3f} is outside safe range "
+            f"[{min_value:.3f}, {max_value:.3f}], clamped to {clamped:.3f}"
+        )
+    return clamped
 
 
 class ObjectSelector(smach.State):
@@ -121,6 +331,8 @@ class ActionTrajectory(smach.State):
             output_keys=[
                 "planning_group",
                 "poses",
+                "target_x",
+                "target_y",
                 "hand_action",  # "open", "close", or None
             ],
         )
@@ -129,7 +341,7 @@ class ActionTrajectory(smach.State):
         action_lower = str(userdata.action_type).lower()
         is_grasp_action = action_lower in ["grasp", "grab", "pick", "take"]
         requested_hand = getattr(userdata, "requested_hand", None)
-        
+
         if requested_hand in ("left", "right"):
             if (
                 requested_hand == "left"
@@ -151,36 +363,61 @@ class ActionTrajectory(smach.State):
             if userdata.target_y >= 0:
                 rospy.logwarn(
                     f"ActionTrajectory: Object is on LEFT side (y={userdata.target_y:.3f}) "
-                    f"but forcing RIGHT arm because left hand is disabled"
+                    "but forcing RIGHT arm because left hand is disabled"
                 )
         else:
             is_right = userdata.target_y < 0
-        
+
         userdata.planning_group = "r_arm" if is_right else "l_arm"
         userdata.hand_action = None
-        
-        # Clamp coordinates to reachable workspace
-        target_x, target_y, was_clamped = clamp_to_workspace(
-            userdata.target_x, userdata.target_y
-        )
+
+        raw_target_x = float(userdata.target_x)
+        raw_target_y = float(userdata.target_y)
+        if is_grasp_action and is_right:
+            grasp_x_bias = bounded_ros_float_param(
+                "/elmira/right_grasp_x_bias", -0.055, -0.10, 0.05
+            )
+            grasp_y_bias = bounded_ros_float_param(
+                "/elmira/right_grasp_y_bias", 0.027, -0.08, 0.08
+            )
+            biased_x = raw_target_x + grasp_x_bias
+            biased_y = raw_target_y + grasp_y_bias
+            rospy.logwarn(
+                "ActionTrajectory: right grasp coordinate bias applied "
+                f"raw=({raw_target_x:.3f}, {raw_target_y:.3f}) "
+                f"bias=({grasp_x_bias:.3f}, {grasp_y_bias:.3f}) "
+                f"biased=({biased_x:.3f}, {biased_y:.3f})"
+            )
+        else:
+            biased_x = raw_target_x
+            biased_y = raw_target_y
+
+        target_x, target_y, was_clamped = clamp_to_workspace(biased_x, biased_y)
+        if is_grasp_action and is_right:
+            userdata.target_x = target_x
+            userdata.target_y = target_y
         if was_clamped:
-            dx = target_x - userdata.target_x
-            dy = target_y - userdata.target_y
+            dx = target_x - biased_x
+            dy = target_y - biased_y
             reasons = []
             if dx != 0:
-                reasons.append(f"X {'too far' if dx < 0 else 'too close'} (shifted {abs(dx):.3f}m)")
+                reasons.append(
+                    f"X {'too far' if dx < 0 else 'too close'} "
+                    f"(shifted {abs(dx):.3f}m)"
+                )
             if dy != 0:
                 reasons.append(
                     f"Y {'too far left' if dy < 0 else 'too far right'} "
                     f"(shifted {abs(dy):.3f}m)"
                 )
             rospy.logwarn(
-                f"ActionTrajectory: Target clamped! "
-                f"({userdata.target_x:.3f}, {userdata.target_y:.3f}) "
-                f"→ ({target_x:.3f}, {target_y:.3f}). "
+                "ActionTrajectory: Target clamped! "
+                f"({biased_x:.3f}, {biased_y:.3f}) -> "
+                f"({target_x:.3f}, {target_y:.3f}). "
                 f"Reason: {', '.join(reasons)}. "
-                f"r_shoulder_z limit is ±0.8rad — lateral reach is limited."
+                "r_shoulder_z limit is +/-0.8rad; lateral reach is limited."
             )
+
         target_z = userdata.target_z
         base_target_z = target_z
         if action_lower == "touch" and is_right:
@@ -193,14 +430,13 @@ class ActionTrajectory(smach.State):
                 f"base_z={base_target_z:.3f}, offset={touch_z_offset:.3f}, "
                 f"target_z={target_z:.3f}"
             )
-        
+
         rospy.loginfo(
             f"ActionTrajectory: action={action_lower}, "
             f"target=({target_x:.3f}, {target_y:.3f}, {target_z:.3f}), "
             f"arm={'right' if is_right else 'left'}"
         )
-        
-        # calculate target for action
+
         target_poses = []
         if action_lower == "touch":
             target_pose = Pose()
@@ -213,21 +449,42 @@ class ActionTrajectory(smach.State):
             target_pose.orientation = get_point_orientation(is_right)
             target_poses.append(target_pose)
         elif action_lower == "push":
-            for offset in [(-0.04, 0.0, 0.0), (0.03, 0.0, 0.0), (0.06, 0.0, 0.0), (0.06, 0.0, 0.10)]:
+            for offset in [
+                (-0.04, 0.0, 0.0),
+                (0.03, 0.0, 0.0),
+                (0.06, 0.0, 0.0),
+                (0.06, 0.0, 0.10),
+            ]:
                 target_pose = Pose()
-                target_pose.position = Point(target_x + offset[0], target_y + offset[1], target_z + offset[2])
+                target_pose.position = Point(
+                    target_x + offset[0], target_y + offset[1], target_z + offset[2]
+                )
                 target_pose.orientation = get_arm_orientation(is_right)
                 target_poses.append(target_pose)
         elif action_lower == "push_left":
-            for offset in [(-0.04, -0.10, 0.10), (0.04, -0.10, 0.0), (0.04, 0.04, 0.0), (0.04, 0.04, 0.10)]:
+            for offset in [
+                (-0.04, -0.10, 0.10),
+                (0.04, -0.10, 0.0),
+                (0.04, 0.04, 0.0),
+                (0.04, 0.04, 0.10),
+            ]:
                 target_pose = Pose()
-                target_pose.position = Point(target_x + offset[0], target_y + offset[1], target_z + offset[2])
+                target_pose.position = Point(
+                    target_x + offset[0], target_y + offset[1], target_z + offset[2]
+                )
                 target_pose.orientation = get_arm_orientation(is_right)
                 target_poses.append(target_pose)
         elif action_lower == "push_right":
-            for offset in [(0.04, 0.10, 0.10), (0.04, 0.10, 0.0), (0.04, -0.04, 0.0), (0.04, -0.04, 0.10)]:
+            for offset in [
+                (0.04, 0.10, 0.10),
+                (0.04, 0.10, 0.0),
+                (0.04, -0.04, 0.0),
+                (0.04, -0.04, 0.10),
+            ]:
                 target_pose = Pose()
-                target_pose.position = Point(target_x + offset[0], target_y + offset[1], target_z + offset[2])
+                target_pose.position = Point(
+                    target_x + offset[0], target_y + offset[1], target_z + offset[2]
+                )
                 target_pose.orientation = get_arm_orientation(is_right)
                 target_poses.append(target_pose)
         elif is_grasp_action:
@@ -239,19 +496,23 @@ class ActionTrajectory(smach.State):
             )
             pre_grasp_backoff = max(
                 0.00,
-                min(0.08, float(rospy.get_param("/elmira/grasp_pre_grasp_x_backoff", 0.035))),
+                min(
+                    0.08,
+                    float(rospy.get_param("/elmira/grasp_pre_grasp_x_backoff", 0.035)),
+                ),
             )
             approach_backoff = max(
                 0.00,
-                min(0.05, float(rospy.get_param("/elmira/grasp_approach_x_backoff", 0.015))),
+                min(
+                    0.05,
+                    float(rospy.get_param("/elmira/grasp_approach_x_backoff", 0.015)),
+                ),
             )
             pre_grasp_z = max(table_z_min, min(table_z_max, target_z + hover_z_offset + 0.03))
             approach_z = max(table_z_min, min(table_z_max, target_z + hover_z_offset))
             pre_grasp_orientation = get_pre_grasp_orientation(is_right)
             grasp_orientation = get_grasp_orientation(is_right)
 
-            # Stage 1: move to a conservative pre-grasp pose with the right hand
-            # already opened/aligned by the inline hand action below.
             pre_grasp_pose = Pose()
             pre_grasp_pose.position = Point(
                 max(0.10, target_x - pre_grasp_backoff),
@@ -261,9 +522,6 @@ class ActionTrajectory(smach.State):
             pre_grasp_pose.orientation = pre_grasp_orientation
             target_poses.append(pre_grasp_pose)
 
-            # Stage 2: small approach near the object. The final close/lift is
-            # handled by GraspRefinement so the robot does not keep refining away
-            # from a good first pose.
             approach_pose = Pose()
             approach_pose.position = Point(
                 max(0.10, target_x - approach_backoff),
@@ -272,29 +530,24 @@ class ActionTrajectory(smach.State):
             )
             approach_pose.orientation = grasp_orientation
             target_poses.append(approach_pose)
-
             userdata.hand_action = None
-            
         elif action_lower == "place":
             orient = get_arm_orientation(is_right)
-            # 1. Pre-place (above target)
             preplace_pose = Pose()
             preplace_pose.position = Point(target_x, target_y, target_z + 0.10)
             preplace_pose.orientation = orient
             target_poses.append(preplace_pose)
-            # 2. Place (at table level)
+
             place_pose = Pose()
             place_pose.position = Point(target_x, target_y, target_z + 0.02)
             place_pose.orientation = orient
             target_poses.append(place_pose)
-            # Signal hand to open after placing
             userdata.hand_action = "open"
-            # 3. Retreat
+
             retreat_pose = Pose()
             retreat_pose.position = Point(target_x - 0.05, target_y, target_z + 0.12)
             retreat_pose.orientation = orient
             target_poses.append(retreat_pose)
-            
         elif action_lower == "open_hand":
             userdata.hand_action = "open"
             userdata.planning_group = "r_hand" if is_right else "l_hand"
@@ -309,11 +562,9 @@ class ActionTrajectory(smach.State):
             rospy.logwarn(f"Action '{action_lower}' not defined")
             userdata.system_message = f"SYSTEM: Action '{action_lower}' not defined"
             return "unknown_action"
-        
-        # set output userdata
+
         userdata.planning_group = "r_arm" if is_right else "l_arm"
         userdata.poses = target_poses
-        
         return "succeeded"
 
 
@@ -402,6 +653,38 @@ class ActionPlanner(smach.StateMachine):
             # callback to create initial pose
             def ik_request_callback(userdata, request):
                 initial_position = userdata.motion_init_pose[userdata.planning_group]
+                action = str(userdata.action_type).lower()
+                use_captured_seed = bool(
+                    rospy.get_param("/elmira/use_captured_grasp_seed", True)
+                )
+                if (
+                    use_captured_seed
+                    and userdata.planning_group == "r_arm"
+                    and action in ["grasp", "grab", "pick", "take"]
+                ):
+                    seed_template = rospy.get_param(
+                        "/elmira/captured_grasp_seed_template",
+                        "natural_red_grasp_current",
+                    )
+                    try:
+                        captured_seed = load_captured_grasp_seed(
+                            seed_template, initial_position
+                        )
+                        initial_position = {
+                            "names": captured_seed["names"],
+                            "positions": captured_seed["positions"],
+                        }
+                        rospy.loginfo(
+                            "ActionPlanner: using captured grasp IK seed "
+                            f"'{captured_seed['template_name']}' with joints "
+                            f"{captured_seed['names']}. Missing seed joints padded "
+                            f"from normal init pose: {captured_seed['missing_seed_joints']}"
+                        )
+                    except Exception as exc:
+                        rospy.logwarn(
+                            "ActionPlanner: requested captured grasp IK seed but "
+                            f"could not load it; falling back to normal init pose: {exc}"
+                        )
                 request.initial_position.joint_name = initial_position["names"]
                 request.initial_position.position = initial_position["positions"]
                 return request
@@ -409,11 +692,80 @@ class ActionPlanner(smach.StateMachine):
             # callback to post-process detected objects
             def ik_response_callback(userdata, response):
                 trajectory = []
+                action = str(userdata.action_type).lower()
+                if action in ["grasp", "grab", "pick", "take"] and userdata.planning_group == "r_arm":
+                    use_captured_stage = bool(
+                        rospy.get_param("/elmira/use_captured_grasp_stage", False)
+                    )
+                    if use_captured_stage:
+                        seed_template = rospy.get_param(
+                            "/elmira/captured_grasp_seed_template",
+                            "natural_red_grasp_current",
+                        )
+                        try:
+                            captured_stage = load_captured_grasp_stage(seed_template)
+                            trajectory.append(
+                                {
+                                    userdata.planning_group: {
+                                        "names": captured_stage["names"],
+                                        "positions": captured_stage["positions"],
+                                    },
+                                    "hand_action": "open",
+                                    "planning_group": userdata.planning_group,
+                                    "source": "captured_natural_grasp_template_stage",
+                                }
+                            )
+                            rospy.loginfo(
+                                "ActionPlanner: prepended captured grasp stage "
+                                f"'{captured_stage['template_name']}' before IK "
+                                f"trajectory with joints {captured_stage['names']}"
+                            )
+                        except Exception as exc:
+                            rospy.logwarn(
+                                "ActionPlanner: requested captured grasp stage but "
+                                f"could not load it; continuing with IK-only trajectory: {exc}"
+                            )
                 for i, position in enumerate(response.positions):
+                    joint_names = list(position.joint_name)
+                    joint_positions = list(position.position)
+                    if action in ["grasp", "grab", "pick", "take"] and userdata.planning_group == "r_arm":
+                        use_seed_guard = bool(
+                            rospy.get_param("/elmira/use_captured_grasp_seed_guard", True)
+                        )
+                        if use_seed_guard:
+                            seed_template = rospy.get_param(
+                                "/elmira/captured_grasp_seed_template",
+                                "natural_red_grasp_current",
+                            )
+                            max_delta = float(
+                                rospy.get_param(
+                                    "/elmira/captured_grasp_seed_max_delta_rad",
+                                    0.45,
+                                )
+                            )
+                            try:
+                                joint_positions, clamp_changes = (
+                                    clamp_positions_to_captured_grasp_seed(
+                                        seed_template,
+                                        joint_names,
+                                        joint_positions,
+                                        max_delta,
+                                    )
+                                )
+                                if clamp_changes:
+                                    rospy.logwarn(
+                                        "ActionPlanner: clamped grasp IK output near "
+                                        f"captured seed '{seed_template}': {clamp_changes}"
+                                    )
+                            except Exception as exc:
+                                rospy.logwarn(
+                                    "ActionPlanner: captured seed guard requested but "
+                                    f"could not be applied: {exc}"
+                                )
                     step = {
                         userdata.planning_group: {
-                            "names": position.joint_name,
-                            "positions": position.position,
+                            "names": joint_names,
+                            "positions": joint_positions,
                         }
                     }
                     
@@ -421,7 +773,6 @@ class ActionPlanner(smach.StateMachine):
                     # grasp: [0] approach only (refinement handles the rest)
                     # place: [0] preplace, [1] place, [2] retreat
                     
-                    action = str(userdata.action_type).lower()
                     # Grasp no longer embeds hand_action here - handled by GraspRefinement
                     if action == "touch" and userdata.planning_group == "r_arm" and i == 0:
                         step["hand_action"] = "touch_wrist"
