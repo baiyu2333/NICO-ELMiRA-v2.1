@@ -475,8 +475,12 @@ def launch_robot(
         "rosparam set /elmira/grasp_contact_z_offset 0.005; "
         "rosparam set /elmira/contact_seed_guard_r_shoulder_y_delta_rad 0.85; "
         "rosparam set /elmira/contact_seed_guard_r_elbow_y_delta_rad 0.75; "
-        "rosparam set /elmira/contact_nudge_r_shoulder_y_rad -0.06; "
+        "rosparam set /elmira/contact_nudge_r_shoulder_y_rad -0.30; "
         "rosparam set /elmira/contact_nudge_r_elbow_y_rad 0.0; "
+        "rosparam set /elmira/right_hand_close_deg 80.0; "
+        "rosparam set /elmira/right_hand_close_deg_by_id \"{'37': 130.0}\"; "
+        "rosparam set /elmira/right_xl320_command_repeats 4; "
+        "rosparam set /elmira/right_xl320_command_interval_sec 0.04; "
         "rosrun elmira state_machine.py"
     )
 

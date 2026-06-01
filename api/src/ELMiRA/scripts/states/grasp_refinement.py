@@ -62,7 +62,7 @@ def _apply_final_contact_joint_nudge(joint_names, joint_positions):
         "r_shoulder_y": _bounded_float_param(
             "/elmira/contact_nudge_r_shoulder_y_rad",
             0.0,
-            -0.25,
+            -0.30,
             0.10,
         ),
         "r_elbow_y": _bounded_float_param(

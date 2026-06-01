@@ -178,6 +178,10 @@ def robot_trial_tuning_fields(action_type: str) -> Dict[str, Any]:
         contact_elbow_nudge = as_float_or_none(
             ros_param_value("/elmira/contact_nudge_r_elbow_y_rad", 0.0)
         )
+        right_hand_close_deg = ros_param_value("/elmira/right_hand_close_deg", 80.0)
+        close_by_id = ros_param_value("/elmira/right_hand_close_deg_by_id", {37: 130.0})
+        xl320_repeats = ros_param_value("/elmira/right_xl320_command_repeats", 4)
+        xl320_interval = ros_param_value("/elmira/right_xl320_command_interval_sec", 0.04)
         x_text = f"{x_bias:+.3f}" if x_bias is not None else "unknown"
         y_text = f"{y_bias:+.3f}" if y_bias is not None else "unknown"
         contact_text = (
@@ -217,6 +221,10 @@ def robot_trial_tuning_fields(action_type: str) -> Dict[str, Any]:
                 f"contact_seed_guard_elbow_y=+/-{contact_elbow_text} rad, "
                 f"final_contact_nudge_shoulder_y={shoulder_nudge_text} rad, "
                 f"final_contact_nudge_elbow_y={elbow_nudge_text} rad, "
+                f"right_hand_close_deg={right_hand_close_deg}, "
+                f"right_hand_close_deg_by_id={close_by_id}, "
+                f"right_xl320_command_repeats={xl320_repeats}, "
+                f"right_xl320_command_interval_sec={xl320_interval}, "
                 f"captured_stage={seed_stage}."
             ),
         }

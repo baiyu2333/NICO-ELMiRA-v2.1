@@ -52,7 +52,10 @@ RIGHT_WRIST_IDS = [31, 33]
 RIGHT_FINGER_IDS = [34, 35, 36, 37]
 RIGHT_TOUCH_WRIST_POSITIONS_DEG = {31: 80.0, 33: -45.0}
 RIGHT_HAND_OPEN_DEG = -150.0
-RIGHT_HAND_CLOSE_DEG = 60.0
+RIGHT_HAND_CLOSE_DEG = 80.0
+RIGHT_HAND_CLOSE_DEG_BY_ID = {37: 130.0}
+RIGHT_XL320_COMMAND_REPEATS = 4
+RIGHT_XL320_COMMAND_INTERVAL_SEC = 0.04
 
 MIN_REACH_X = 0.10
 MAX_REACH_X = 0.32
@@ -197,6 +200,25 @@ def get_ros_int_list_param(name: str, default: List[int]) -> List[int]:
         return list(default)
 
 
+def get_ros_float_map_param(name: str, default: Dict[int, float]) -> Dict[int, float]:
+    try:
+        import re
+        import rospy
+
+        raw = rospy.get_param(name, default)
+        if isinstance(raw, dict):
+            return {int(key): float(value) for key, value in raw.items()}
+        if isinstance(raw, str):
+            parsed = {
+                int(key): float(value)
+                for key, value in re.findall(r"(-?\d+)\s*:\s*(-?\d+(?:\.\d+)?)", raw)
+            }
+            return parsed or dict(default)
+    except Exception:
+        pass
+    return dict(default)
+
+
 def current_xl320_config() -> Dict[str, Any]:
     wrist_z_id = get_ros_int_param("/elmira/right_xl320_wrist_z_id", RIGHT_WRIST_IDS[0])
     wrist_x_id = get_ros_int_param("/elmira/right_xl320_wrist_x_id", RIGHT_WRIST_IDS[1])
@@ -209,6 +231,10 @@ def current_xl320_config() -> Dict[str, Any]:
         "finger_ids": finger_ids,
         "open_deg": get_ros_float_param("/elmira/right_hand_open_deg", RIGHT_HAND_OPEN_DEG),
         "close_deg": get_ros_float_param("/elmira/right_hand_close_deg", RIGHT_HAND_CLOSE_DEG),
+        "close_deg_by_id": get_ros_float_map_param(
+            "/elmira/right_hand_close_deg_by_id",
+            RIGHT_HAND_CLOSE_DEG_BY_ID,
+        ),
     }
 
 
@@ -445,13 +471,26 @@ def publish_xl320_commands(commands: List[Tuple[int, int, int]], timeout_s: floa
             rospy.sleep(0.05)
         if publisher.get_num_connections() == 0:
             return False, f"{XL320_TOPIC} has no subscriber."
+        repeat_count = max(
+            1,
+            int(get_ros_float_param("/elmira/right_xl320_command_repeats", RIGHT_XL320_COMMAND_REPEATS)),
+        )
+        interval_sec = max(
+            0.005,
+            get_ros_float_param(
+                "/elmira/right_xl320_command_interval_sec",
+                RIGHT_XL320_COMMAND_INTERVAL_SEC,
+            ),
+        )
         for motor_id, register, value in commands:
-            msg = nicomsg.msg.sff()
-            msg.param1 = str(int(motor_id))
-            msg.param2 = float(register)
-            msg.param3 = float(value)
-            publisher.publish(msg)
-            rospy.sleep(0.015)
+            per_command_repeats = repeat_count if int(register) == 30 else min(2, repeat_count)
+            for _ in range(per_command_repeats):
+                msg = nicomsg.msg.sff()
+                msg.param1 = str(int(motor_id))
+                msg.param2 = float(register)
+                msg.param3 = float(value)
+                publisher.publish(msg)
+                rospy.sleep(interval_sec)
         rospy.sleep(0.15)
         return True, ""
     except Exception as exc:
@@ -493,25 +532,31 @@ def execute_hand_only(hand_action: str, safety_confirmed: bool) -> Dict[str, Any
             "real_robot_motion_commanded": False,
         }
     xl320 = current_xl320_config()
-    target_deg = xl320["open_deg"] if hand_action == "open" else xl320["close_deg"]
-    raw = _deg_to_xl320_raw(target_deg)
     commands = []
     for motor_id in xl320["finger_ids"]:
         commands.append((motor_id, 24, 1))
     for motor_id in xl320["finger_ids"]:
         commands.append((motor_id, 32, 150))
+    target_by_motor = {}
     for motor_id in xl320["finger_ids"]:
+        target_deg = (
+            xl320["open_deg"]
+            if hand_action == "open"
+            else xl320["close_deg_by_id"].get(motor_id, xl320["close_deg"])
+        )
+        raw = _deg_to_xl320_raw(target_deg)
         commands.append((motor_id, 30, raw))
+        target_by_motor[motor_id] = {"deg": target_deg, "raw": raw}
     ok, reason = publish_xl320_commands(commands)
     return {
         "execution_status": "executed" if ok else "unavailable",
         "failure_reason": reason,
         "real_robot_motion_commanded": ok,
         "commanded_xl320_ids": xl320["finger_ids"] if ok else [],
-        "target_deg": target_deg,
-        "target_raw": raw,
+        "target_by_motor": target_by_motor,
         "commands": commands if ok else [],
-        "note": f"{hand_action} fingers only; no arm or wrist motion.",
+        "command_repeats": get_ros_float_param("/elmira/right_xl320_command_repeats", RIGHT_XL320_COMMAND_REPEATS),
+        "note": f"{hand_action} fingers only; no arm or wrist motion. Commands are repeated to avoid missed XL-320 writes.",
     }
 
 

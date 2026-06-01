@@ -199,7 +199,10 @@ class HandControl(smach.State):
     RIGHT_TOUCH_WRIST_X_DEG = -45.0
     RIGHT_TOUCH_HOLD_SEC = 2.0
     RIGHT_HAND_OPEN_POS = -150.0
-    RIGHT_HAND_CLOSE_POS = 60.0
+    RIGHT_HAND_CLOSE_POS = 80.0
+    RIGHT_HAND_CLOSE_POS_BY_ID = {37: 130.0}
+    RIGHT_XL320_COMMAND_REPEATS = 4
+    RIGHT_XL320_COMMAND_INTERVAL_SEC = 0.04
 
     @staticmethod
     def _parse_int_list(value, default):
@@ -218,6 +221,19 @@ class HandControl(smach.State):
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def _parse_float_map(value, default=None):
+        if value is None:
+            return dict(default or {})
+        if isinstance(value, dict):
+            return {int(key): float(item) for key, item in value.items()}
+        if isinstance(value, str):
+            parsed = {}
+            for key, item in re.findall(r"(-?\d+)\s*:\s*(-?\d+(?:\.\d+)?)", value):
+                parsed[int(key)] = float(item)
+            return parsed or dict(default or {})
+        return dict(default or {})
 
     @staticmethod
     def _deg_to_xl320_raw(deg: float) -> int:
@@ -313,6 +329,26 @@ class HandControl(smach.State):
         )
         self._right_hand_close_pos = float(
             rospy.get_param("/elmira/right_hand_close_deg", self.RIGHT_HAND_CLOSE_POS)
+        )
+        self._right_hand_close_pos_by_id = self._parse_float_map(
+            rospy.get_param(
+                "/elmira/right_hand_close_deg_by_id",
+                self.RIGHT_HAND_CLOSE_POS_BY_ID,
+            ),
+            self.RIGHT_HAND_CLOSE_POS_BY_ID,
+        )
+        self._right_xl320_command_repeats = max(
+            1,
+            int(rospy.get_param("/elmira/right_xl320_command_repeats", self.RIGHT_XL320_COMMAND_REPEATS)),
+        )
+        self._right_xl320_command_interval_sec = max(
+            0.005,
+            float(
+                rospy.get_param(
+                    "/elmira/right_xl320_command_interval_sec",
+                    self.RIGHT_XL320_COMMAND_INTERVAL_SEC,
+                )
+            ),
         )
         self._right_touch_hold_sec = float(
             rospy.get_param("/elmira/right_touch_hold_sec", self.RIGHT_TOUCH_HOLD_SEC)
@@ -415,29 +451,29 @@ class HandControl(smach.State):
     def _move_right_hand_xl320(self, action: str):
         """Control the swapped physical right hand via XL-320 Protocol 2.0."""
         self._refresh_right_xl320_params()
-        target_pos = (
-            self._right_hand_open_pos if action == "open" else self._right_hand_close_pos
-        )
-        raw_pos = self._deg_to_xl320_raw(target_pos)
-
         try:
             rospy.loginfo(f"HandControl: XL-320 swapped right hand {action} via ROS topic...")
             all_motor_ids = sorted(
                 set(list(self._right_touch_wrist_positions.keys()) + self._right_finger_ids)
             )
             for motor_id in all_motor_ids:
-                self._send_xl320_cmd(motor_id, 24, 1, source_action=action)
-                rospy.sleep(0.005)
+                self._send_xl320_cmd_repeated(motor_id, 24, 1, source_action=action, repeats=2)
             for motor_id in all_motor_ids:
-                self._send_xl320_cmd(motor_id, 32, 150, source_action=action)
-                rospy.sleep(0.005)
+                self._send_xl320_cmd_repeated(motor_id, 32, 150, source_action=action, repeats=2)
             self._align_right_touch_wrist_xl320()
+            commanded_fingers = {}
             for motor_id in self._right_finger_ids:
-                self._send_xl320_cmd(motor_id, 30, raw_pos, source_action=action)
-                rospy.sleep(0.005)
+                target_pos = (
+                    self._right_hand_open_pos
+                    if action == "open"
+                    else self._right_hand_close_pos_by_id.get(motor_id, self._right_hand_close_pos)
+                )
+                raw_pos = self._deg_to_xl320_raw(target_pos)
+                self._send_xl320_cmd_repeated(motor_id, 30, raw_pos, source_action=action)
+                commanded_fingers[motor_id] = {"deg": target_pos, "raw": raw_pos}
             rospy.loginfo(
                 f"HandControl: XL-320 swapped right hand {action} -> "
-                f"fingers {self._right_finger_ids} to {target_pos} deg (raw={raw_pos})"
+                f"finger targets {commanded_fingers}"
             )
         except Exception as e:
             rospy.logerr(f"HandControl: XL-320 swapped right hand {action} error: {e}")
@@ -450,17 +486,14 @@ class HandControl(smach.State):
             return
         all_motor_ids = sorted(self._right_touch_wrist_positions.keys())
         for motor_id in all_motor_ids:
-            self._send_xl320_cmd(motor_id, 24, 1, source_action="touch_wrist")
-            rospy.sleep(0.005)
+            self._send_xl320_cmd_repeated(motor_id, 24, 1, source_action="touch_wrist", repeats=2)
         for motor_id in all_motor_ids:
-            self._send_xl320_cmd(motor_id, 32, 120, source_action="touch_wrist")
-            rospy.sleep(0.005)
+            self._send_xl320_cmd_repeated(motor_id, 32, 120, source_action="touch_wrist", repeats=2)
         commanded = {}
         for wrist_id, wrist_deg in self._right_touch_wrist_positions.items():
             raw_wrist = self._deg_to_xl320_raw(wrist_deg)
-            self._send_xl320_cmd(wrist_id, 30, raw_wrist, source_action="touch_wrist")
+            self._send_xl320_cmd_repeated(wrist_id, 30, raw_wrist, source_action="touch_wrist")
             commanded[wrist_id] = {"deg": wrist_deg, "raw": raw_wrist}
-            rospy.sleep(0.005)
         rospy.loginfo(
             "HandControl: swapped right wrist touch alignment %s hold=%.1fs",
             commanded,
@@ -524,6 +557,20 @@ class HandControl(smach.State):
         msg.param3 = float(value)
         self._pub_xl320.publish(msg)
         self._log_xl320_cmd(motor_id, register, value, source_action)
+
+    def _send_xl320_cmd_repeated(
+        self,
+        motor_id: int,
+        register: int,
+        value: int,
+        source_action: str = "unknown",
+        repeats: int = None,
+    ):
+        """Repeat XL-320 commands because the Motion topic can drop isolated writes."""
+        repeat_count = self._right_xl320_command_repeats if repeats is None else max(1, int(repeats))
+        for _ in range(repeat_count):
+            self._send_xl320_cmd(motor_id, register, value, source_action)
+            rospy.sleep(self._right_xl320_command_interval_sec)
     
 
     def _open_hand(self, side: str) -> bool:

@@ -54,7 +54,10 @@ XL320_RIGHT_WRIST_POSITIONS_DEG = {
     33: -45.0,
 }
 XL320_HAND_OPEN_DEG = -150.0
-XL320_HAND_CLOSE_DEG = 60.0
+XL320_HAND_CLOSE_DEG = 80.0
+XL320_HAND_CLOSE_DEG_BY_ID = {37: 130.0}
+XL320_COMMAND_REPEATS = 4
+XL320_COMMAND_INTERVAL_SEC = 0.04
 COMMANDABLE_RIGHT_ARM_JOINTS = [
     "r_shoulder_z",
     "r_shoulder_y",
@@ -231,6 +234,25 @@ def motion_setangle_subscriber_ready(timeout_s: float = 2.0) -> bool:
 def _deg_to_xl320_raw(deg: float) -> int:
     raw = int((float(deg) + 150.0) / 300.0 * 1023.0)
     return max(0, min(1023, raw))
+
+
+def _ros_float_map_param(name: str, default: Dict[int, float]) -> Dict[int, float]:
+    try:
+        import re
+        import rospy
+
+        raw = rospy.get_param(name, default)
+        if isinstance(raw, dict):
+            return {int(key): float(value) for key, value in raw.items()}
+        if isinstance(raw, str):
+            parsed = {
+                int(key): float(value)
+                for key, value in re.findall(r"(-?\d+)\s*:\s*(-?\d+(?:\.\d+)?)", raw)
+            }
+            return parsed or dict(default)
+    except Exception:
+        pass
+    return dict(default)
 
 
 def resolve_right_arm_execution_preset(preset_name: str, template: Dict[str, Any]) -> Dict[str, Any]:
@@ -677,38 +699,42 @@ def execute_right_hand_preset(preset_name: str, timestamp: str, template: Dict[s
                 "notes": "Start physical direct control and wait until Motion is ready.",
             }
         action = preset.get("action", "open")
-        target_deg = XL320_HAND_OPEN_DEG if action == "open" else XL320_HAND_CLOSE_DEG
-        target_raw = _deg_to_xl320_raw(target_deg)
+        close_by_id = _ros_float_map_param(
+            "/elmira/right_hand_close_deg_by_id",
+            XL320_HAND_CLOSE_DEG_BY_ID,
+        )
+        repeat_count = max(1, int(rospy.get_param("/elmira/right_xl320_command_repeats", XL320_COMMAND_REPEATS)))
+        interval_sec = max(
+            0.005,
+            float(rospy.get_param("/elmira/right_xl320_command_interval_sec", XL320_COMMAND_INTERVAL_SEC)),
+        )
+
+        def publish_command(motor_id, register, value, repeats):
+            for _ in range(repeats):
+                msg = nicomsg.msg.sff()
+                msg.param1 = str(motor_id)
+                msg.param2 = float(register)
+                msg.param3 = float(value)
+                publisher.publish(msg)
+                rospy.sleep(interval_sec)
 
         all_motor_ids = sorted(set(list(XL320_RIGHT_WRIST_POSITIONS_DEG.keys()) + XL320_RIGHT_HAND_MOTOR_IDS))
         for motor_id in all_motor_ids:
-            msg = nicomsg.msg.sff()
-            msg.param1 = str(motor_id)
-            msg.param2 = 24.0
-            msg.param3 = 1.0
-            publisher.publish(msg)
-            rospy.sleep(0.01)
+            publish_command(motor_id, 24.0, 1.0, min(2, repeat_count))
         for motor_id in all_motor_ids:
-            msg = nicomsg.msg.sff()
-            msg.param1 = str(motor_id)
-            msg.param2 = 32.0
-            msg.param3 = 150.0
-            publisher.publish(msg)
-            rospy.sleep(0.01)
+            publish_command(motor_id, 32.0, 150.0, min(2, repeat_count))
         for motor_id, wrist_deg in XL320_RIGHT_WRIST_POSITIONS_DEG.items():
-            msg = nicomsg.msg.sff()
-            msg.param1 = str(motor_id)
-            msg.param2 = 30.0
-            msg.param3 = float(_deg_to_xl320_raw(wrist_deg))
-            publisher.publish(msg)
-            rospy.sleep(0.01)
+            publish_command(motor_id, 30.0, float(_deg_to_xl320_raw(wrist_deg)), repeat_count)
+        target_by_motor = {}
         for motor_id in XL320_RIGHT_HAND_MOTOR_IDS:
-            msg = nicomsg.msg.sff()
-            msg.param1 = str(motor_id)
-            msg.param2 = 30.0
-            msg.param3 = float(target_raw)
-            publisher.publish(msg)
-            rospy.sleep(0.01)
+            target_deg = (
+                XL320_HAND_OPEN_DEG
+                if action == "open"
+                else close_by_id.get(motor_id, XL320_HAND_CLOSE_DEG)
+            )
+            target_raw = _deg_to_xl320_raw(target_deg)
+            publish_command(motor_id, 30.0, float(target_raw), repeat_count)
+            target_by_motor[motor_id] = {"deg": target_deg, "raw": target_raw}
         rospy.sleep(0.2)
         return {
             "timestamp": timestamp,
@@ -723,8 +749,8 @@ def execute_right_hand_preset(preset_name: str, timestamp: str, template: Dict[s
             "ros_topic": preset["topic"],
             "xl320_motor_ids": all_motor_ids,
             "finger_motor_ids": XL320_RIGHT_HAND_MOTOR_IDS,
-            "target_deg": target_deg,
-            "target_raw": target_raw,
+            "target_by_motor": target_by_motor,
+            "command_repeats": repeat_count,
             "notes": preset.get("description", "Fixed right-hand preset published through Motion wrapper."),
         }
     except Exception as exc:
