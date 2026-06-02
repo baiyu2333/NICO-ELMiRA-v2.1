@@ -51,8 +51,9 @@
     <arg name="right_touch_hold_sec" default="2.0" doc="Seconds to hold touch pose after wrist alignment before returning to safe pose"/>
     <arg name="right_touch_z_offset" default="-0.075" doc="Touch-only Z adjustment in robot frame. Negative lowers the right-hand touch target."/>
     <arg name="right_hand_open_deg" default="-150.0" doc="Current physical right hand XL-320 finger open target in degrees"/>
-    <arg name="right_hand_close_deg" default="80.0" doc="Current physical right hand XL-320 finger close target in degrees"/>
-    <arg name="right_hand_close_deg_by_id" default="{'37': 130.0}" doc="Optional per-motor close targets for current physical right hand XL-320 fingers"/>
+    <arg name="right_hand_close_deg" default="90.0" doc="Current physical right hand XL-320 finger close target in degrees"/>
+    <arg name="right_hand_close_deg_by_id" default="{'34': 150.0, '35': 150.0, '36': 150.0, '37': 70.0}" doc="Optional per-motor close targets for current physical right hand XL-320 fingers. With max_raw=1500, ID 37 at 70 deg maps to about raw 1100."/>
+    <arg name="right_xl320_position_max_raw" default="1500" doc="Tested XL-320 goal-position range for the current RH7D hand. ID 37 is reduced separately to avoid middle/ring overload."/>
     <arg name="right_xl320_command_repeats" default="4" doc="Repeat each right-hand XL-320 command to reduce missed single writes"/>
     <arg name="right_xl320_command_interval_sec" default="0.04" doc="Delay between repeated right-hand XL-320 commands"/>
     <arg name="move_wait_max_checks" default="350" doc="Max joint-state checks per movement wait; 50 Hz feedback means 350 is about 7 seconds"/>
@@ -205,6 +206,7 @@
     <param name="/elmira/right_hand_open_deg" value="$(arg right_hand_open_deg)"/>
     <param name="/elmira/right_hand_close_deg" value="$(arg right_hand_close_deg)"/>
     <rosparam param="/elmira/right_hand_close_deg_by_id" subst_value="true">$(arg right_hand_close_deg_by_id)</rosparam>
+    <param name="/elmira/right_xl320_position_max_raw" value="$(arg right_xl320_position_max_raw)"/>
     <param name="/elmira/right_xl320_command_repeats" value="$(arg right_xl320_command_repeats)"/>
     <param name="/elmira/right_xl320_command_interval_sec" value="$(arg right_xl320_command_interval_sec)"/>
     <param name="/elmira/move_wait_max_checks" value="$(arg move_wait_max_checks)"/>

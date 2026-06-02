@@ -199,8 +199,12 @@ class HandControl(smach.State):
     RIGHT_TOUCH_WRIST_X_DEG = -45.0
     RIGHT_TOUCH_HOLD_SEC = 2.0
     RIGHT_HAND_OPEN_POS = -150.0
-    RIGHT_HAND_CLOSE_POS = 80.0
-    RIGHT_HAND_CLOSE_POS_BY_ID = {37: 130.0}
+    RIGHT_HAND_CLOSE_POS = 90.0
+    RIGHT_HAND_CLOSE_POS_BY_ID = {34: 150.0, 35: 150.0, 36: 150.0, 37: 70.0}
+    # Seed RH7D/EROS hands may expose either 10-bit (1023) or 12-bit
+    # emulated (4095) position ranges. Keep 1023 as the conservative default
+    # until the physical hand resolution is confirmed.
+    RIGHT_XL320_POSITION_MAX_RAW = 1500
     RIGHT_XL320_COMMAND_REPEATS = 4
     RIGHT_XL320_COMMAND_INTERVAL_SEC = 0.04
 
@@ -236,13 +240,25 @@ class HandControl(smach.State):
         return dict(default or {})
 
     @staticmethod
-    def _deg_to_xl320_raw(deg: float) -> int:
-        raw = int((float(deg) + 150.0) / 300.0 * 1023.0)
-        return max(0, min(1023, raw))
+    def _bounded_position_max_raw(value, default=1023):
+        try:
+            raw_max = int(value)
+        except (TypeError, ValueError):
+            raw_max = int(default)
+        # Position register 30 is written as an unsigned 16-bit value, but
+        # RH7D/EROS position modes are expected to be 10-bit or 12-bit.
+        return max(1023, min(4095, raw_max))
 
     @staticmethod
-    def _xl320_raw_to_deg(raw: int) -> float:
-        return (float(raw) / 1023.0 * 300.0) - 150.0
+    def _deg_to_xl320_raw(deg: float, position_max_raw: int = 1023) -> int:
+        max_raw = HandControl._bounded_position_max_raw(position_max_raw)
+        raw = int((float(deg) + 150.0) / 300.0 * float(max_raw))
+        return max(0, min(max_raw, raw))
+
+    @staticmethod
+    def _xl320_raw_to_deg(raw: int, position_max_raw: int = 1023) -> float:
+        max_raw = HandControl._bounded_position_max_raw(position_max_raw)
+        return (float(raw) / float(max_raw) * 300.0) - 150.0
     
     def __init__(self):
         smach.State.__init__(
@@ -336,6 +352,13 @@ class HandControl(smach.State):
                 self.RIGHT_HAND_CLOSE_POS_BY_ID,
             ),
             self.RIGHT_HAND_CLOSE_POS_BY_ID,
+        )
+        self._right_xl320_position_max_raw = self._bounded_position_max_raw(
+            rospy.get_param(
+                "/elmira/right_xl320_position_max_raw",
+                self.RIGHT_XL320_POSITION_MAX_RAW,
+            ),
+            self.RIGHT_XL320_POSITION_MAX_RAW,
         )
         self._right_xl320_command_repeats = max(
             1,
@@ -468,12 +491,15 @@ class HandControl(smach.State):
                     if action == "open"
                     else self._right_hand_close_pos_by_id.get(motor_id, self._right_hand_close_pos)
                 )
-                raw_pos = self._deg_to_xl320_raw(target_pos)
+                raw_pos = self._deg_to_xl320_raw(
+                    target_pos, self._right_xl320_position_max_raw
+                )
                 self._send_xl320_cmd_repeated(motor_id, 30, raw_pos, source_action=action)
                 commanded_fingers[motor_id] = {"deg": target_pos, "raw": raw_pos}
             rospy.loginfo(
                 f"HandControl: XL-320 swapped right hand {action} -> "
-                f"finger targets {commanded_fingers}"
+                f"finger targets {commanded_fingers}, "
+                f"position_max_raw={self._right_xl320_position_max_raw}"
             )
         except Exception as e:
             rospy.logerr(f"HandControl: XL-320 swapped right hand {action} error: {e}")
@@ -491,7 +517,9 @@ class HandControl(smach.State):
             self._send_xl320_cmd_repeated(motor_id, 32, 120, source_action="touch_wrist", repeats=2)
         commanded = {}
         for wrist_id, wrist_deg in self._right_touch_wrist_positions.items():
-            raw_wrist = self._deg_to_xl320_raw(wrist_deg)
+            raw_wrist = self._deg_to_xl320_raw(
+                wrist_deg, self._right_xl320_position_max_raw
+            )
             self._send_xl320_cmd_repeated(wrist_id, 30, raw_wrist, source_action="touch_wrist")
             commanded[wrist_id] = {"deg": wrist_deg, "raw": raw_wrist}
         rospy.loginfo(
@@ -509,13 +537,15 @@ class HandControl(smach.State):
             return
         timestamp = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
         approximate_degree_value = (
-            round(self._xl320_raw_to_deg(value), 3) if int(register) == 30 else None
+            round(self._xl320_raw_to_deg(value, getattr(self, "_right_xl320_position_max_raw", 1023)), 3)
+            if int(register) == 30 else None
         )
         entry = {
             "timestamp": timestamp,
             "motor_id": int(motor_id),
             "register": int(register),
             "raw_value": int(value),
+            "position_max_raw": int(getattr(self, "_right_xl320_position_max_raw", 1023)),
             "approximate_degree_value": approximate_degree_value,
             "semantic_label": XL320_SEMANTIC_LABELS.get(int(motor_id), "unknown"),
             "source_action": source_action or "unknown",

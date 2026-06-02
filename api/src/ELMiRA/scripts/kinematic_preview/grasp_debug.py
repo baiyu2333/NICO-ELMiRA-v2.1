@@ -52,8 +52,9 @@ RIGHT_WRIST_IDS = [31, 33]
 RIGHT_FINGER_IDS = [34, 35, 36, 37]
 RIGHT_TOUCH_WRIST_POSITIONS_DEG = {31: 80.0, 33: -45.0}
 RIGHT_HAND_OPEN_DEG = -150.0
-RIGHT_HAND_CLOSE_DEG = 80.0
-RIGHT_HAND_CLOSE_DEG_BY_ID = {37: 130.0}
+RIGHT_HAND_CLOSE_DEG = 90.0
+RIGHT_HAND_CLOSE_DEG_BY_ID = {34: 150.0, 35: 150.0, 36: 150.0, 37: 70.0}
+RIGHT_XL320_POSITION_MAX_RAW = 1500
 RIGHT_XL320_COMMAND_REPEATS = 4
 RIGHT_XL320_COMMAND_INTERVAL_SEC = 0.04
 
@@ -235,6 +236,13 @@ def current_xl320_config() -> Dict[str, Any]:
             "/elmira/right_hand_close_deg_by_id",
             RIGHT_HAND_CLOSE_DEG_BY_ID,
         ),
+        "position_max_raw": max(
+            1023,
+            min(
+                4095,
+                int(get_ros_float_param("/elmira/right_xl320_position_max_raw", RIGHT_XL320_POSITION_MAX_RAW)),
+            ),
+        ),
     }
 
 
@@ -253,9 +261,10 @@ def clamp_to_workspace(x: float, y: float) -> Tuple[float, float, bool, Dict[str
     )
 
 
-def _deg_to_xl320_raw(deg: float) -> int:
-    raw = int((float(deg) + 150.0) / 300.0 * 1023.0)
-    return max(0, min(1023, raw))
+def _deg_to_xl320_raw(deg: float, position_max_raw: int = RIGHT_XL320_POSITION_MAX_RAW) -> int:
+    max_raw = max(1023, min(4095, int(position_max_raw)))
+    raw = int((float(deg) + 150.0) / 300.0 * float(max_raw))
+    return max(0, min(max_raw, raw))
 
 
 def detect_target(target_object: str, timeout_s: float) -> Dict[str, Any]:
@@ -512,13 +521,14 @@ def execute_wrist_only(safety_confirmed: bool) -> Dict[str, Any]:
     for motor_id in xl320["wrist_ids"]:
         commands.append((motor_id, 32, 120))
     for motor_id, deg in wrist_positions.items():
-        commands.append((motor_id, 30, _deg_to_xl320_raw(deg)))
+        commands.append((motor_id, 30, _deg_to_xl320_raw(deg, xl320["position_max_raw"])))
     ok, reason = publish_xl320_commands(commands)
     return {
         "execution_status": "executed" if ok else "unavailable",
         "failure_reason": reason,
         "real_robot_motion_commanded": ok,
         "commanded_xl320_ids": xl320["wrist_ids"] if ok else [],
+        "position_max_raw": xl320["position_max_raw"],
         "commands": commands if ok else [],
         "note": "Wrist-only stage commands XL-320 IDs 31/33 by default; no arm/finger motion.",
     }
@@ -544,7 +554,7 @@ def execute_hand_only(hand_action: str, safety_confirmed: bool) -> Dict[str, Any
             if hand_action == "open"
             else xl320["close_deg_by_id"].get(motor_id, xl320["close_deg"])
         )
-        raw = _deg_to_xl320_raw(target_deg)
+        raw = _deg_to_xl320_raw(target_deg, xl320["position_max_raw"])
         commands.append((motor_id, 30, raw))
         target_by_motor[motor_id] = {"deg": target_deg, "raw": raw}
     ok, reason = publish_xl320_commands(commands)
@@ -554,6 +564,7 @@ def execute_hand_only(hand_action: str, safety_confirmed: bool) -> Dict[str, Any
         "real_robot_motion_commanded": ok,
         "commanded_xl320_ids": xl320["finger_ids"] if ok else [],
         "target_by_motor": target_by_motor,
+        "position_max_raw": xl320["position_max_raw"],
         "commands": commands if ok else [],
         "command_repeats": get_ros_float_param("/elmira/right_xl320_command_repeats", RIGHT_XL320_COMMAND_REPEATS),
         "note": f"{hand_action} fingers only; no arm or wrist motion. Commands are repeated to avoid missed XL-320 writes.",
@@ -624,6 +635,7 @@ def summary_text(record: Dict[str, Any]) -> str:
         f"Wrist IDs 31/33 commanded by wrist stage: {plan.get('wrist_ids_31_33_will_be_commanded', False)}",
         f"XL-320 wrist IDs: {plan.get('xl320_config', {}).get('wrist_ids', RIGHT_WRIST_IDS)}",
         f"XL-320 finger IDs: {plan.get('xl320_config', {}).get('finger_ids', RIGHT_FINGER_IDS)}",
+        f"XL-320 position max raw: {plan.get('xl320_config', {}).get('position_max_raw', RIGHT_XL320_POSITION_MAX_RAW)}",
         "Planned pose/action sequence:",
     ]
     for step in plan.get("planned_steps", []):
