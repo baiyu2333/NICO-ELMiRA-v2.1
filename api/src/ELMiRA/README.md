@@ -1,5 +1,9 @@
-## ELMiRA: Embodying Language Models in Robot Action
+## ELMiRA v3: Embodying Language Models in Robot Action
 ![alt text](NICO-demo-pipeline-comprehensive.drawio.png)
+
+ELMiRA v3 is the NICO manipulation-development branch of the project. It builds on the v2.1 dashboard/operations-center work and adds right-hand grasp debugging, kinematic preview, first-person trial recording, captured grasp templates, and RH7D/XL-320 hand tuning.
+
+The ROS package name remains `elmira` for compatibility. Commands such as `roslaunch elmira ...` and `rosrun elmira ...` are intentionally unchanged.
 
 ### Installation
 

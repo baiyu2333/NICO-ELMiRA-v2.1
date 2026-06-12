@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean AP2 monitoring dashboard for the ELMiRA FYP2 demo."""
+"""ELMiRA v3 dashboard for NICO interaction and grasp-development tools."""
 
 import atexit
 import json
@@ -2695,7 +2695,7 @@ def return_home_handler(transcript: str):
 
 def build_dashboard():
     with gr.Blocks(
-        title="ELMiRA NICO Console",
+        title="ELMiRA v3 NICO Console",
         theme=gr.themes.Soft(),
         css=CLEAN_DASHBOARD_CSS,
     ) as demo:
@@ -2703,8 +2703,8 @@ def build_dashboard():
 
         gr.Markdown(
             "<div class='main-title'>"
-            "<h1>ELMiRA NICO Console</h1>"
-            "<p>Talk to NICO, send a backup text command, and keep launch control visible.</p>"
+            "<h1>ELMiRA v3 NICO Console</h1>"
+            "<p>NICO interaction, right-hand grasp debugging, trial recording, and safe launch control.</p>"
             "</div>"
         )
 
@@ -3893,7 +3893,7 @@ def main() -> int:
         if not port_available(port):
             continue
         local_url = f"http://127.0.0.1:{port}"
-        print(f"ELMiRA FYP2 Monitoring Console: {local_url}", flush=True)
+        print(f"ELMiRA v3 NICO Console: {local_url}", flush=True)
         try:
             demo.queue().launch(server_name="0.0.0.0", server_port=port)
             return 0
