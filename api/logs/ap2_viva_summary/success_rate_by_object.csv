@@ -1,0 +1,2 @@
+target_object,object_shape,object_weight_g,valid_trials,success,partial,failed,success_rate_percent,main_failure_reason
+dice,cube,not available,12,2,0,10,16.67,unknown
