@@ -1,0 +1,5 @@
+phase,phase_definition,valid_trials,success,partial,failed,success_rate_percent,notes
+early_z_and_hand_tuning,"Valid labelled grasp attempts before the final hand-closing/grip tuning. Includes Z, wrist/table-clearance, distance, and hand-strength failures.",10,0,0,10,0.0,Historical calibration evidence. Do not present as final performance.
+after_hand_closing_fix,"Valid labelled grasp attempts after the log explicitly records the hand weak-grasp fix or higher XL-320 command range, but before the latest demo run.",1,1,0,0,100.0,"Shows improvement after grip tuning, but still needs repeated controlled trials."
+latest_demo_phase,Latest labelled post-calibration demonstration phase from the newest available first-person trial evidence.,1,1,0,0,100.0,Representative latest successful dice/cube grasp/lift evidence; sample size is too small for a final rate.
+unknown_unlabelled,"Rows that are unlabelled, non-grasp, pending annotation, or not confidently assignable to a calibrated phase.",0,0,0,0,not available,To be reviewed or excluded from success-rate claims until manually labelled. Total rows in this bucket: 15.
