@@ -3,9 +3,12 @@
 import argparse
 import logging
 import sys
+import threading
+import time
 from os.path import abspath, dirname, join, pardir
 
 # import cv_bridge # Removed
+import cv2
 import nicomsg.srv
 import nicovision.MultiCamRecorder as MultiCamRecorder
 import rospy
@@ -74,6 +77,8 @@ class NicoRosVision:
         """
         self._logger = logging.getLogger(__name__)
         self._device = None
+        self._direct_capture = None
+        self._direct_thread = None
         self._stream_running = False
         self._config = config
         if config is None:
@@ -168,6 +173,13 @@ class NicoRosVision:
             self._logger.warning("Stream already running")
             return
 
+        if self._config["mode"] in ("left", "right"):
+            if self._start_direct_single_stream():
+                return
+            self._logger.warning(
+                "Direct OpenCV camera stream failed; falling back to MultiCamRecorder"
+            )
+
         nico_eyes = MultiCamRecorder.autodetect_nicoeyes()
         devices = []
 
@@ -233,12 +245,99 @@ class NicoRosVision:
         self._stream_running = True
         self._logger.info("Camera stream started with %d publisher(s)", len(self._publishers))
 
+    def _direct_device_candidates(self):
+        nico_eyes = MultiCamRecorder.autodetect_nicoeyes()
+        if self._config["mode"] == "right":
+            selected = self._config["device_right"] or nico_eyes[1] or nico_eyes[0]
+        else:
+            selected = self._config["device_left"] or nico_eyes[0]
+
+        candidates = []
+
+        def _add(candidate):
+            if candidate is None:
+                return
+            try:
+                device_id = MultiCamRecorder.VideoDevice.resolve_device(candidate)
+            except Exception as exc:
+                self._logger.warning("Could not resolve camera device %s: %s", candidate, exc)
+                return
+            if device_id >= 0 and device_id not in candidates:
+                candidates.append(device_id)
+
+        _add(selected)
+        for eye in nico_eyes:
+            _add(eye)
+        for device_path in sorted(__import__("glob").glob("/dev/video*")):
+            _add(device_path)
+        return candidates
+
+    def _start_direct_single_stream(self):
+        device_ids = self._direct_device_candidates()
+        if not device_ids:
+            self._logger.error("No camera detected for %s mode", self._config["mode"])
+            return False
+
+        width = int(self._config["width"])
+        height = int(self._config["height"])
+        framerate = int(self._config["framerate"])
+        capture = None
+        device_id = None
+        for candidate_id in device_ids:
+            trial_capture = cv2.VideoCapture(candidate_id)
+            trial_capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            trial_capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            trial_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            trial_capture.set(cv2.CAP_PROP_FPS, framerate)
+
+            ok, frame = (False, None)
+            if trial_capture.isOpened():
+                ok, frame = trial_capture.read()
+            if ok and frame is not None:
+                capture = trial_capture
+                device_id = candidate_id
+                break
+            self._logger.warning("Camera id %s did not return a frame; trying next", candidate_id)
+            trial_capture.release()
+
+        if capture is None or device_id is None:
+            self._logger.error("No OpenCV camera candidate returned a frame")
+            return False
+
+        self._direct_capture = capture
+        self._stream_running = True
+
+        def _publish_loop():
+            sleep_sec = 1.0 / max(1, framerate)
+            while self._stream_running and not rospy.is_shutdown():
+                ok, frame = capture.read()
+                if ok and frame is not None:
+                    self._publishers[0].publish(numpy_to_ros_image(frame, "bgr8"))
+                else:
+                    self._logger.warning("Camera read failed for id %s", device_id)
+                    time.sleep(0.2)
+                time.sleep(sleep_sec)
+
+        self._direct_thread = threading.Thread(target=_publish_loop)
+        self._direct_thread.daemon = True
+        self._direct_thread.start()
+        self._logger.info(
+            "Direct camera stream started on id %s at %dx%d", device_id, width, height
+        )
+        return True
+
     def stop_stream(self):
         """
         Stops the stream
         """
         if not self._stream_running:
             self._logger.warning("Stream not running")
+            return
+        if self._direct_capture is not None:
+            self._stream_running = False
+            self._direct_capture.release()
+            self._direct_capture = None
+            self._logger.info("Direct camera stream stopped")
             return
         self._device.stop_recording()
         self._stream_running = False

@@ -5,8 +5,8 @@
   <arg name="framerate" default="30"/>
   <arg name="zoom" default="150"/>
   <arg name="tilt" default="-482400"/>
-  <!-- Current lab setup: desktop camera app confirms NICO first-person view on /dev/video0. -->
-  <arg name="device_left" default="/dev/video0"/>
+  <!-- Leave blank so Vision.py auto-detects the current NICO See3CAM by-id path. -->
+  <arg name="device_left" default=""/>
   <arg name="device_right" default=""/>
 
   <node name="nicovision" pkg="nicoros" type="Vision.py"

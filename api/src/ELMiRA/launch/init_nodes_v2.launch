@@ -25,6 +25,8 @@
     <arg name="temperature" default="0.7" doc="LLM temperature"/>
     <arg name="image_topic" default="/nico/vision/left" doc="Primary camera topic; current robot publishes left reliably"/>
     <arg name="camera_mode" default="left" doc="Camera mode: left, right, or stereo"/>
+    <arg name="camera_device_left" default="" doc="Optional camera override; blank uses nicovision auto-detect"/>
+    <arg name="camera_device_right" default="" doc="Optional right camera override; blank uses nicovision auto-detect"/>
     <arg name="json_path" default="$(find elmira)/json/nico_humanoid_upper_fixed_usb0.json" doc="Motor config JSON"/>
     <arg name="dummy" default="false" doc="Run in dummy/simulation mode"/>
     <arg name="motion_respawn" default="true" doc="Restart Motion.py if USB/motor startup fails transiently"/>
@@ -91,6 +93,8 @@
     <!-- Camera. Default to left-only because the current right stream is unreliable. -->
     <include file="$(find elmira)/launch/camera.launch">
         <arg name="mode" value="$(arg camera_mode)"/>
+        <arg name="device_left" value="$(arg camera_device_left)"/>
+        <arg name="device_right" value="$(arg camera_device_right)"/>
     </include>
     
     <!-- Derived argument for required nodes (only required if NOT dummy) -->
