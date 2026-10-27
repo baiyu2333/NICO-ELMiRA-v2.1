@@ -1,0 +1,29 @@
+Source: user-supplied Active_Conformal_Foveated_Vision_Single_RGB_v8(1).zip
+Archive SHA256: 3099b7ba3d9e2714f19d0bd90b50ea7b0de1f0d0b7f1b98034156ee3908dc136
+Archive directory: acf_lifelong3d_v8/acf3d/
+Imported 2026-10-13. The eleven acf3d/*.py files are byte-for-byte copies.
+No checkpoint, recorded results, ROS2 wrapper, pycache, or depth-camera adapter
+is bundled. No separate redistribution license was found in the supplied ZIP;
+confirm the professor's permission before distributing these source files.
+
+__init__.py 28195e40c637489035a52c571205b161f69a14bc259e5699d89743c844ca6de4
+frontend.py 403c53921134ec9f3e32f4d366b3fa5dbe7f18ef9eb9c9a0f12b701a39a05467
+frontend_v8.py 236b70a0590afd245c9cd551a2c8538ea0193750d83aab1086d83529a025dbf4
+model.py 7c20cfcef0affc0d4a41232fc9f082847f66b157ddf936b95ec229e97b22ccbf
+synthetic.py 43a0c409fbb013e94777489c0eafe4d071bcc9a218ee0ed311432a36bd12d39e
+pose_se3.py 8f25a6ab549989d34ae71320016746b98fa4bfb0e54dcc181e7756e4133cf28e
+rgb_geometry_v8.py d3a8799552d0864932a585a4dd9186acae562250c2bc0217fcb96d2cd17cd1c5
+memory.py d24fd48e1bdf49d03bfa120c2806e20481c7876adaa100b2f8556162280c38d4
+planner_v6.py 0b3f732d1360ee79eb0854da8ce91b40f1f36c77cafca0e9ece5ac76aa720ff1
+se3_gaussian_world.py 78ee08fd9909d0fb4bcd083eaeddca2dcbe918644e7d00ada016a31d96991e54
+gaussian_world.py 1505202b3ed86562ace1f73b36512b1332a7b1093dc533ac5260cac4496fb0fd
+
+Adaptations live OUTSIDE this copy: reviewed foreground masks, calibration,
+rectification, synchronized metric poses, visibility-supported hull export,
+baseline/parallax/reprojection checks, real-object data splits, and read-only
+ROS1 supervised viewpoint requests. Supplied synthetic RGB-D renderer is only
+a dependency of original frontend.py; no depth frames are used by the adapter.
+gaussian_world.py supplies GaussianRenderStats; its legacy RGB-D world is not
+used. The CPU SE3 map receives only supported single-RGB visual-hull proxy depth.
+The original planner is wrapped with measured-candidate, FOV, visibility and
+duplicate-view gates. No future real camera frames are used for scoring.

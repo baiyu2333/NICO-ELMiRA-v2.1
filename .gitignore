@@ -52,3 +52,12 @@ api/examples/nicoemotionrecognition/tts_storage
 *.log
 
 AGENTS.md
+
+# Local experiment evidence can contain identifiable people and credentials.
+# Already tracked AP2 summaries remain tracked; review any new evidence separately.
+api/logs/
+docs/reports/
+
+# Privately supplied professor source/weights: redistribution not yet confirmed.
+api/src/ELMiRA/scripts/active_vision/vendor/acf3d/
+api/model_checkpoints/active_vision_v8/

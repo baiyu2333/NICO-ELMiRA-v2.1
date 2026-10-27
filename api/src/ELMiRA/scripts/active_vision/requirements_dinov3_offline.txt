@@ -1,0 +1,9 @@
+# Separate Python 3.10/3.11 environment only, NOT the ROS / ELMiRA environment.
+# Install the matching CPU torch/torchvision wheels first as documented.
+torch==2.6.0
+torchvision==0.21.0
+transformers==4.56.2
+safetensors==0.6.2
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+Pillow==11.3.0

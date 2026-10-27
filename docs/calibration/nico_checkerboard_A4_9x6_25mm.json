@@ -1,0 +1,26 @@
+{
+  "pdf": "/home/baiyuzhe/catkin_ws/src/NICO-software/docs/calibration/nico_checkerboard_A4_9x6_25mm.pdf",
+  "paper": "A4 landscape",
+  "page_size_mm": [
+    297,
+    210
+  ],
+  "squares": [
+    10,
+    7
+  ],
+  "inner_corners": [
+    9,
+    6
+  ],
+  "nominal_square_mm": 25.0,
+  "grid_size_mm": [
+    250.0,
+    175.0
+  ],
+  "scale_ruler_mm": 100,
+  "measured_square_mm": null,
+  "print_verified": false,
+  "camera_calibration_verified": false,
+  "real_robot_motion_commanded": false
+}

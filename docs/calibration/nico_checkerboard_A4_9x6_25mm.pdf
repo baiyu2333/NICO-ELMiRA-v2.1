@@ -1,0 +1,128 @@
+%PDF-1.3
+%“Œ‹ž ReportLab Generated PDF document http://www.reportlab.com
+1 0 obj
+<<
+/F1 2 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/Contents 7 0 R /MediaBox [ 0 0 841.8898 595.2756 ] /Parent 6 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>> 
+  /Type /Page
+>>
+endobj
+4 0 obj
+<<
+/PageMode /UseNone /Pages 6 0 R /Type /Catalog
+>>
+endobj
+5 0 obj
+<<
+/Author (anonymous) /CreationDate (D:20000101000000+00'00') /Creator (ReportLab PDF Library - www.reportlab.com) /Keywords () /ModDate (D:20000101000000+00'00') /Producer (ReportLab PDF Library - www.reportlab.com) 
+  /Subject (unspecified) /Title (NICO single-RGB calibration: 9 x 6 inner corners) /Trapped /False
+>>
+endobj
+6 0 obj
+<<
+/Count 1 /Kids [ 3 0 R ] /Type /Pages
+>>
+endobj
+7 0 obj
+<<
+/Length 2664
+>>
+stream
+1 0 0 1 0 0 cm  BT /F1 12 Tf 14.4 TL ET
+1 1 1 rg
+n 0 0 841.8898 595.2756 re f*
+0 0 0 rg
+n 66.61417 474.8031 70.86614 70.86614 re f*
+n 208.3465 474.8031 70.86614 70.86614 re f*
+n 350.0787 474.8031 70.86614 70.86614 re f*
+n 491.811 474.8031 70.86614 70.86614 re f*
+n 633.5433 474.8031 70.86614 70.86614 re f*
+n 137.4803 403.937 70.86614 70.86614 re f*
+n 279.2126 403.937 70.86614 70.86614 re f*
+n 420.9449 403.937 70.86614 70.86614 re f*
+n 562.6772 403.937 70.86614 70.86614 re f*
+n 704.4094 403.937 70.86614 70.86614 re f*
+n 66.61417 333.0709 70.86614 70.86614 re f*
+n 208.3465 333.0709 70.86614 70.86614 re f*
+n 350.0787 333.0709 70.86614 70.86614 re f*
+n 491.811 333.0709 70.86614 70.86614 re f*
+n 633.5433 333.0709 70.86614 70.86614 re f*
+n 137.4803 262.2047 70.86614 70.86614 re f*
+n 279.2126 262.2047 70.86614 70.86614 re f*
+n 420.9449 262.2047 70.86614 70.86614 re f*
+n 562.6772 262.2047 70.86614 70.86614 re f*
+n 704.4094 262.2047 70.86614 70.86614 re f*
+n 66.61417 191.3386 70.86614 70.86614 re f*
+n 208.3465 191.3386 70.86614 70.86614 re f*
+n 350.0787 191.3386 70.86614 70.86614 re f*
+n 491.811 191.3386 70.86614 70.86614 re f*
+n 633.5433 191.3386 70.86614 70.86614 re f*
+n 137.4803 120.4724 70.86614 70.86614 re f*
+n 279.2126 120.4724 70.86614 70.86614 re f*
+n 420.9449 120.4724 70.86614 70.86614 re f*
+n 562.6772 120.4724 70.86614 70.86614 re f*
+n 704.4094 120.4724 70.86614 70.86614 re f*
+n 66.61417 49.6063 70.86614 70.86614 re f*
+n 208.3465 49.6063 70.86614 70.86614 re f*
+n 350.0787 49.6063 70.86614 70.86614 re f*
+n 491.811 49.6063 70.86614 70.86614 re f*
+n 633.5433 49.6063 70.86614 70.86614 re f*
+BT /F1 9 Tf 10.8 TL ET
+BT 1 0 0 1 252.8834 572.5984 Tm (NICO calibration | 9 x 6 INNER CORNERS | 10 x 7 squares | nominal 25 mm/square) Tj T* ET
+BT /F1 6 Tf 7.2 TL ET
+BT 1 0 0 1 66.61417 551.3386 Tm (TOP LEFT \(orientation reference; not an automatically detected marker\)) Tj T* ET
+.5 w
+n 66.61417 28.34646 m 350.0787 28.34646 l S
+n 66.61417 22.67717 m 66.61417 34.01575 l S
+n 94.96063 25.51181 m 94.96063 31.1811 l S
+n 123.3071 25.51181 m 123.3071 31.1811 l S
+n 151.6535 25.51181 m 151.6535 31.1811 l S
+n 180 25.51181 m 180 31.1811 l S
+n 208.3465 25.51181 m 208.3465 31.1811 l S
+n 236.6929 25.51181 m 236.6929 31.1811 l S
+n 265.0394 25.51181 m 265.0394 31.1811 l S
+n 293.3858 25.51181 m 293.3858 31.1811 l S
+n 321.7323 25.51181 m 321.7323 31.1811 l S
+n 350.0787 22.67717 m 350.0787 34.01575 l S
+BT /F1 7 Tf 8.4 TL ET
+BT 1 0 0 1 364.252 25.51181 Tm (100 mm ruler: measure between end ticks) Tj T* ET
+BT 1 0 0 1 251.3244 12.75591 Tm (Print A4 LANDSCAPE at ACTUAL SIZE / 100%. No Fit or Shrink. Measure printed squares before calibration.) Tj T* ET
+ 
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000073 00000 n 
+0000000104 00000 n 
+0000000211 00000 n 
+0000000414 00000 n 
+0000000482 00000 n 
+0000000818 00000 n 
+0000000877 00000 n 
+trailer
+<<
+/ID 
+[<0bf830b6b6b8f6e434e170b25dc62683><0bf830b6b6b8f6e434e170b25dc62683>]
+% ReportLab generated PDF document -- digest (http://www.reportlab.com)
+
+/Info 5 0 R
+/Root 4 0 R
+/Size 8
+>>
+startxref
+3592
+%%EOF
